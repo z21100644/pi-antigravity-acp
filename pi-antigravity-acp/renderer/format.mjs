@@ -2,6 +2,9 @@ export function percent(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
     ? `${Math.round(value * 1000) / 10}%` : '—'
 }
+export function wholePercent(value) {
+  return percent(value).replace(/\.\d+%$/, '%')
+}
 export function number(value, locale) {
   return Number.isFinite(value) ? new Intl.NumberFormat(locale).format(Math.round(value)) : '—'
 }

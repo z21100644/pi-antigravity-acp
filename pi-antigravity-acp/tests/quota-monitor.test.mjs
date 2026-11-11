@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { QuotaReader, parseUsage } from '../lib/quota.js';
 import { UsageMonitor } from '../lib/usage-monitor.js';
 import { runCommand } from '../lib/host.js';
-import { number, percent, resetTime, selectedGroup } from '../renderer/format.mjs';
+import { number, percent, wholePercent, resetTime, selectedGroup } from '../renderer/format.mjs';
 
 const rawGroups = [{ name: 'Gemini Models', buckets: [
     { id: 'gemini-5h', name: 'Five hours', window: '5h', remaining_fraction: 0.75, reset_time: '2030-01-01T05:00:00Z' },
@@ -191,7 +191,14 @@ test('tool rounds schedule one completion refresh and unloading removes pending 
 test('GUI formats actual zero quota and keeps unknown balances and dates unavailable', () => {
     assert.equal(percent(0), '0%');
     assert.equal(percent(0.754), '75.4%');
-    for (const value of [null, undefined, NaN, -1, 2]) assert.equal(percent(value), '—');
+    assert.equal(wholePercent(0.958), '95%');
+    assert.equal(wholePercent(0.29), '29%');
+    assert.equal(wholePercent(0), '0%');
+    assert.equal(wholePercent(1), '100%');
+    for (const value of [null, undefined, NaN, -1, 2]) {
+        assert.equal(percent(value), '—');
+        assert.equal(wholePercent(value), '—');
+    }
     assert.equal(number(undefined, 'en'), '—');
     assert.equal(resetTime(null, 'en'), '—');
     assert.equal(resetTime('invalid', 'en'), '—');
