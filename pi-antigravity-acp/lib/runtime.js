@@ -540,6 +540,14 @@ export class AntigravityRuntime {
                 if (!this.historyPrefixIntact(conv, split.system, history)) {
                     this.dropTurn(conv, 'The conversation history was compacted or rewritten; rebuilding the session from the harness history.');
                 }
+                else if (this.isTurnLive(conv.turn) && (conv.model !== options.model || conv.effort !== effort)) {
+                    // agy snapshots the executor configuration at session/prompt.
+                    // A config ACK while MCP is parked only changes future prompts;
+                    // releasing this result would continue with the previous effort.
+                    this.host.log.info(`antigravity-acp: restarting executor ${JSON.stringify({ sessionId: conv.sessionId,
+                        previousModel: conv.model, previousEffort: conv.effort, model: options.model, requestedEffort: effort })}`);
+                    this.dropTurn(conv, 'The requested model or reasoning effort changed; rebuilding with the completed tool results.');
+                }
                 else {
                     timing?.mark('session_ready', { sessionId: conv.sessionId, reused: true });
                     const resumed = await this.deliverResults(conv, split.messages, proc, tools, options.signal, options.model, effort);

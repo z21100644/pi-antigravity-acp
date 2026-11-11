@@ -94,14 +94,32 @@ test('claiming a warm session reasserts the PI effort before its first prompt', 
     assert.equal(f.prompts()[0].level,'high');
 });
 
-test('tool resumption applies a changed PI effort before releasing the MCP result', async t => {
-    const f=fixture(t), input=request({reasoningEffort:'low',messages:[system,user('u1','CALL read {}')]});
-    const first=await collect(f.runtime.stream(input));
-    await collect(f.runtime.stream(resume(first,input,'high')));
-    const received=f.events().find(item=>item.method==='tool_result_received');
-    assert.equal(received.level,'high');
-    assert.equal(f.prompts().length,1,'the parked native prompt must remain intact');
-});
+for (const warm of [false,true]) {
+    for (const [from,to,nextModel] of [['low','high',model],['high','low',model],['high','high','gemini-3.8-flash']]) {
+        test(`${warm?'warm':'cold'} tool resumption starts a new executor when ${from} changes to ${to} on ${nextModel}`, async t => {
+            const f=fixture(t,{env:{FAKE_AGY_SKIP_HISTORY:'1'}});
+            if(warm) {
+                await f.runtime.warmup({system:system.content[0].text,tools:[tool],model,reasoningEffort:from});
+                f.runtime.standbyEnabled=false;
+            }
+            const input=request({reasoningEffort:from,messages:[system,user('u1','CALL read {}')]});
+            const first=await collect(f.runtime.stream(input));
+            const oldSession=f.runtime.conversations.get('strict|main').sessionId;
+            const second=await collect(f.runtime.stream({...resume(first,input,to),model:nextModel}));
+            assert.equal(second.at(-1).reason.kind,'stop');
+            assert.equal(second.filter(chunk=>chunk.type==='block-end'&&chunk.block.type==='tool-call').length,0);
+            const prompts=f.prompts();
+            assert.equal(prompts.length,2,'a configuration ACK cannot change an executor that already started');
+            assert.notEqual(prompts[1].session,oldSession);
+            assert.equal(prompts[1].level,to);
+            assert.equal(prompts[1].model,nextModel);
+            assert.match(prompts[1].rawText,/<tool_result[^>]*>\s*fixture result/);
+            assert.match(prompts[1].rawText,/Continue the task from the latest tool results above/);
+            assert.ok(f.events().some(event=>event.method==='session/cancel'&&event.sessionId===oldSession));
+            assert.ok(f.records.some(line=>line.includes('restarting executor')));
+        });
+    }
+}
 
 test('a reported downgrade while parked is repaired before the tool result resumes generation', async t => {
     const f=fixture(t), input=request({messages:[system,user('u1','CALL read {}')]});

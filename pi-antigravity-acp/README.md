@@ -54,6 +54,8 @@ Windows 后台启动的 ACP 主进程、额度查询和安装登记均设置 `wi
 
 工具等待期间收到的降档通知会在交还结果前修正；生成期间若 ACP 报告不同模型或推理等级，会中止该轮并撤销恢复索引，避免继续交付未按选择执行的回复。日志中的 `configuration confirmed` 记录请求与确认等级及入口阶段。`zero-thought usage sample` 仅记录账单中的零思考 token，不将其解释为自动降档、热池标记或恢复正常的证据；思考 token 数量也不作为自动重试条件。
 
+原生 agy 在 `session/prompt` 开始时固定 executor 的模型与推理等级；工具等待期间的设置确认只影响后续 prompt。PI 在这期间切换模型或等级时，插件会取消旧 executor，从 PI 历史和已完成的工具结果重建 ACP session，再按新选择继续，不重新执行已完成的工具。日志记录 `restarting executor`。选择未变时继续沿用原 ACP session。
+
 已在 PI Desktop 0.22.0、agy 1.5.5 上验证带历史对话的完整进程重启：续问仍沿用原 ACP session ID，并正确回忆此前保存的验证信息。日志中的 `antigravity-acp: restored session <id>` 仅在恢复后的复用计划成立时记录；最终索引也应保留相同 ID。
 
 ## 实时额度面板

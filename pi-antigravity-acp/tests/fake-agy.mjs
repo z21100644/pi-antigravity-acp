@@ -295,7 +295,7 @@ rl.on('line', async (line) => {
     }
     if (method === 'session/prompt') {
       const rawText = params.prompt.filter(b => b.type === 'text').map(b => b.text).join('')
-      const text = rawText
+      const text = process.env.FAKE_AGY_SKIP_HISTORY ? rawText.replace(/<omp_history>[\s\S]*?<\/omp_history>/g, '') : rawText
       if (log) appendFileSync(log, `${JSON.stringify({ session: s.id, text, rawText, images: params.prompt.filter(b => b.type === 'image').length, tools: s.tools, model: s.model, level: s.level, system: s.system.slice(0, 80) })}\n`)
       s.cancelled = false
       const result = await runPrompt(s, text)
