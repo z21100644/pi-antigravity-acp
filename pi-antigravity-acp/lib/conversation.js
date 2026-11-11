@@ -357,14 +357,14 @@ export async function* pumpStep(turn, host, signal) {
                     yield { type: 'tool-call-delta', index: blockIndex, id: call.id, name: call.name, argumentsDelta: call.argumentsJson };
                     yield { type: 'block-end', index: blockIndex, block: { type: 'tool-call', id: call.id, name: call.name, arguments: call.argumentsJson } };
                 }
-                const stepSample = await host.consumeStepUsage?.();
+                const stepSample = await host.consumeStepUsage?.({ final: false });
                 // Cancellation may arrive while blocks are yielded or usage is read.
                 if (isAborted()) {
                     yield* abort();
                     return;
                 }
                 if (stepSample !== undefined) {
-                    const usage = toTokenUsage(stepSample.usage, stepSample.calls);
+                    const usage = toTokenUsage(stepSample.usage, stepSample.exact ? 1 : stepSample.calls);
                     if (usage !== undefined)
                         yield { type: 'usage', usage };
                 }
@@ -388,10 +388,10 @@ export async function* pumpStep(turn, host, signal) {
                 const calls = turn.toolSteps + turn.continuations + 1;
                 const totalUsage = event.result.usage;
                 host.recordUsage(totalUsage, calls);
-                const finalSample = await host.consumeStepUsage?.();
+                const finalSample = await host.consumeStepUsage?.({ final: true });
                 let usage;
                 if (finalSample !== undefined) {
-                    usage = toTokenUsage(finalSample.usage, finalSample.calls);
+                    usage = toTokenUsage(finalSample.usage, finalSample.exact ? 1 : finalSample.calls);
                 }
                 else if (turn.emittedCalls > 0 && totalUsage !== undefined) {
                     const total = totalUsage;

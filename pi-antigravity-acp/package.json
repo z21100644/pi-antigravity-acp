@@ -4,6 +4,9 @@
   "type": "module",
   "main": "main.cjs",
   "license": "MIT",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
+  },
   "description": "PI Desktop model provider using a local authenticated HTTP bridge to the official agy ACP transport.",
   "repository": {
     "type": "git",

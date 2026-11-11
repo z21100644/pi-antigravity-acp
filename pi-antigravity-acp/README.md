@@ -33,6 +33,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pi-antigravity-acp\scripts
 {
   "defaultEffort": "medium",
   "warmup": true,
+  "coldSwitchSettleMs": 80,
   "autoPatch": false
 }
 ```
@@ -41,6 +42,26 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pi-antigravity-acp\scripts
 
 日志中的 `Local HTTP → ACP` 表示请求已进入桥接。若仍出现 OpenAI 的 API key 错误，重新运行安装器并重启 PI Desktop，确认 provider 指向上述本机端点。诊断和缓存文件不应提交到仓库。
 
+## 会话恢复与用量
+
+- 已完成的主对话保存在 ACP 数据目录的 `session-index.json`，通过临时文件和 rename 更新。PI Desktop 重启或空闲会话被淘汰后，插件会检查 system 和历史内容指纹，使用 `session/load` 恢复原 ACP session，并重新绑定 MCP 端点。历史被改写、压缩或加载失败时，从 PI 的历史重建；每次新 prompt 提交前撤销索引，避免恢复未完成的原生上下文。
+- 用量优先读取 `gen_metadata.data` 的生成记录，在轮末用已完成的 model steps 补齐缺口。两表按用量记录及出现次数对账，处理晚到记录和重复读取；旧版数据库保留 steps 路径。数据库样本保留原始 token 总量，无法读取数据库时沿用 ACP 轮末归一化用量。
+- 模型与推理等级依次设置，并检查返回值，未生效时重试一次。`coldSwitchSettleMs` 接受 `0..2000` 的整数，默认 `80`；仅在新建或恢复的 session 确实切换设置后等待，取消请求会中断等待。
+
+已在 PI Desktop 0.22.0、agy 1.5.5 上验证带历史对话的完整进程重启：续问仍沿用原 ACP session ID，并正确回忆此前保存的验证信息。日志中的 `antigravity-acp: restored session <id>` 仅在恢复后的复用计划成立时记录；最终索引也应保留相同 ID。
+
+## 开发验证
+
+在本目录运行：
+
+```powershell
+npm test
+```
+
+测试使用本机 fake ACP，覆盖 HTTP 历史转换、重启恢复、用量对账、工具交接、取消与 standby 清理。实际对话、截图、日志、数据库和安装备份应保存在仓库之外。
+
 ## 来源
 
 ACP 核心沿用 OMP 1.3.0 实现，基于 [lili-luo/dsh-plugin-bundle](https://github.com/lili-luo/dsh-plugin-bundle) 与 [121909 的适配](https://github.com/121909/dsh-plugin-bundle)。保留原项目 [MIT 许可证](LICENSE)。
+
+生成记录解析、持久化会话流程和冷切换等待参考 [dsh-plugin-bundle v0.4.0（`0a90ec3`）](https://github.com/lili-luo/dsh-plugin-bundle/tree/0a90ec37c69430608084e33ebc2f891e328c9e89/dsh-llm-antigravity-acp)，并适配 PI Desktop 的历史指纹、HTTP provider 身份和原有容量管理。

@@ -20,12 +20,13 @@ import { JsonRpcClosedError, JsonRpcRemoteError } from "./jsonrpc.js";
 import { McpBridge } from "./mcp-bridge.js";
 import { assertSupportedAgyVersion, BRIDGE_AGENT, checkUnlock, defaultHome, defaultPatchScript, GPT_OSS_CONTEXT_WINDOW, LOCKED_CONTEXT_WINDOW, prepareHome, readVersion, resolveAgyBinary, syncOAuthToken, UNLOCKED_CONTEXT_WINDOW, } from "./preflight.js";
 import { QuotaReader } from "./quota.js";
-import { peekMaxModelStepIdx, readModelStepsAfter, removeEmptySessionDb, sessionDbPath } from "./usage-db.js";
+import { SessionUsageReader, removeEmptySessionDb, sessionDbPath } from "./usage-db.js";
 import { contentDigest, deferred, delay, digest, KeyedMutex, withAbort } from "./util.js";
 import { RequestTiming } from "./timing.js";
 import { hostArguments } from "./tool-metadata.js";
 import { acquireStartupLease } from "./startup-lease.js";
 import { UnusedSessionLedger } from "./unused-session-ledger.js";
+import { SessionStore } from "./session-store.js";
 /** Parked calls answer with a still-running notice before Gemini cache TTL expiry and agy's 180-second MCP deadline. */
 export const DEFAULT_RELAY_AFTER_MS = 85_000;
 const CONTINUE_PROMPT = 'Continue exactly where your previous output stopped. Do not repeat any earlier text.';
@@ -98,6 +99,7 @@ export class AntigravityRuntime {
     processExitCleanups = new Map();
     unusedSessions = new Map();
     unusedSessionLedger;
+    sessions;
     unusedSessionRecovery;
     closeRetryAbort = new AbortController();
     sessionCapacityMutex = new KeyedMutex();
@@ -118,6 +120,7 @@ export class AntigravityRuntime {
         this.host = host;
         this.home = host.config.home.length > 0 ? host.config.home : defaultHome();
         this.unusedSessionLedger = new UnusedSessionLedger(this.home, message => host.log.warn(message));
+        this.sessions = new SessionStore(join(this.home, 'session-index.json'), message => host.log.warn(message));
         this.standbyEnabled = host.config.warmup;
         this.catalog = new ModelCatalog(join(this.home, 'catalog.json'));
         this.bridge = new McpBridge({
@@ -135,6 +138,53 @@ export class AntigravityRuntime {
         this.quota = new QuotaReader(() => this.preflight?.binary, host.runCommand, host.config.quotaTtlMs);
         this.sweeper = setInterval(() => this.sweep(), 60_000);
         this.sweeper.unref?.();
+    }
+    /** Only completed, clean main conversations can be resumed after a restart. */
+    persistConversation(conv) {
+        if (conv.purpose !== MAIN_PURPOSE || conv.key.startsWith('anon-') || conv.turn !== undefined
+            || conv.dirty || conv.sessionId === undefined || conv.knownHistory === undefined || conv.systemHash === undefined)
+            return;
+        this.sessions.save(conv.key, {
+            sessionId: conv.sessionId,
+            workspace: this.preflight?.workspace ?? this.home,
+            numericEnumMode: this.host.config.numericEnumMode,
+            systemHash: conv.systemHash,
+            knownHistory: structuredClone(conv.knownHistory),
+            emittedAssistant: conv.emittedAssistant,
+            advertisedTools: structuredClone(conv.advertisedTools),
+            nativeToolBaselines: structuredClone(conv.nativeToolBaselines),
+            knownTools: structuredClone([...conv.knownTools]),
+            issuedIds: [...conv.issuedIds],
+        });
+    }
+    async tryResumeSession(conv, system, tools, history, proc, signal) {
+        if (conv.sessionId !== undefined || conv.dirty || conv.purpose !== MAIN_PURPOSE || conv.key.startsWith('anon-'))
+            return false;
+        const entry = this.sessions.get(conv.key);
+        if (entry === undefined)
+            return false;
+        const candidate = { ...conv, systemHash: entry.systemHash, knownHistory: entry.knownHistory, emittedAssistant: entry.emittedAssistant };
+        if (entry.workspace !== (this.preflight?.workspace ?? this.home)
+            || entry.numericEnumMode !== this.host.config.numericEnumMode || !this.historyPrefixIntact(candidate, system, history)) {
+            this.sessions.forget(conv.key);
+            return false;
+        }
+        if (proc.initializeResult?.agentCapabilities?.loadSession !== true)
+            return false;
+        try {
+            await this.openSession(conv, system, tools, proc, signal, entry);
+            conv.systemHash = entry.systemHash;
+            conv.knownHistory = structuredClone(entry.knownHistory);
+            conv.emittedAssistant = entry.emittedAssistant;
+            conv.issuedIds = new Set(entry.issuedIds);
+            return true;
+        }
+        catch (error) {
+            signal?.throwIfAborted();
+            this.sessions.forget(conv.key);
+            this.host.log.warn(`antigravity-acp: session/load failed (${entry.sessionId}); rebuilding from PI history: ${String(error)}`);
+            return false;
+        }
     }
     /** Configured context window (0 = auto). */
     configuredContextWindow() {
@@ -377,8 +427,13 @@ export class AntigravityRuntime {
         this.standbyRetryTimer = undefined;
         if (this.sweeper !== undefined)
             clearInterval(this.sweeper);
-        for (const conv of this.conversations.values())
+        for (const conv of this.conversations.values()) {
+            if (!conv.opening && conv.turn === undefined)
+                this.persistConversation(conv);
+            else
+                this.sessions.forget(conv.key);
             conv.turn?.abandon('The harness provider was unloaded.');
+        }
         this.conversations.clear();
         this.tenants.clear();
         this.standbyTenants.clear();
@@ -495,7 +550,10 @@ export class AntigravityRuntime {
             else if (conv.turn !== undefined) {
                 this.dropTurn(conv, 'Superseded by a newer request.');
             }
+            const resumedFromDisk = await this.tryResumeSession(conv, split.system, tools, history, proc, options.signal);
             const plan = this.plan(conv, split.system, split.messages, history);
+            if (resumedFromDisk && !plan.rebuild)
+                this.host.log.info(`antigravity-acp: restored session ${conv.sessionId}`);
             const replayBudget = this.preflight?.unlock.status === 'unlocked'
                 ? UNLOCKED_REPLAY_BUDGET_BYTES
                 : LOCKED_REPLAY_BUDGET_BYTES;
@@ -514,7 +572,10 @@ export class AntigravityRuntime {
                     }
                     options.signal?.throwIfAborted();
                     timing?.mark('session_ready', { sessionId: conversation.sessionId, reused });
-                    await this.select(conversation, proc, options.model, effort);
+                    const switched = await this.select(conversation, proc, options.model, effort);
+                    const settleMs = this.host.config.coldSwitchSettleMs ?? 80;
+                    if ((!reused || resumedFromDisk) && switched && settleMs > 0)
+                        await retryDelay(settleMs, undefined, { signal: options.signal });
                     timing?.mark('model_configured', { sessionId: conversation.sessionId });
                 })(),
                 plan.rebuild
@@ -535,9 +596,6 @@ export class AntigravityRuntime {
             // turns must never back a fresh permission request.
             conv.reportedToolCalls.clear();
             conv.turn = new AcpTurn(this.nextTurnTag(split.messages));
-            if (conv.sessionId !== undefined) {
-                conv.usageCursor = peekMaxModelStepIdx(sessionDbPath(this.home, conv.sessionId));
-            }
             this.startPrompt(conv, proc, blocks);
             yield* this.pump(conv, proc, options, effort);
         }
@@ -640,7 +698,7 @@ export class AntigravityRuntime {
             toolNames: new Set(),
             reportedToolCalls: new Map(),
             opening: false,
-            usageCursor: -1,
+            usageReader: undefined,
             knownHistory: undefined,
             emittedAssistant: undefined,
             issuedIds: new Set(),
@@ -775,6 +833,10 @@ export class AntigravityRuntime {
         for (const conv of this.conversations.values()) {
             if (conv.process !== proc)
                 continue;
+            if (conv.turn === undefined && !conv.opening)
+                this.persistConversation(conv);
+            else
+                this.sessions.forget(conv.key);
             conv.turn?.events.push({ kind: 'error', error: new LlmError(`Antigravity ACP process exited: ${error.message}`, 'TRANSPORT') });
             this.releaseTenant(conv);
             conv.standbySlot = undefined;
@@ -787,7 +849,7 @@ export class AntigravityRuntime {
             conv.advertisedToolNames.clear();
             conv.knownTools.clear();
             conv.reportedToolCalls.clear();
-            conv.usageCursor = -1;
+            conv.usageReader = undefined;
             conv.dirty = true;
         }
     }
@@ -799,13 +861,13 @@ export class AntigravityRuntime {
         syncOAuthToken(this.home);
     }
     /** Reserve capacity before starting ACP work, including background warmup. */
-    async newTrackedSession(proc, params, listener, background = false, signal) {
+    async newTrackedSession(proc, params, listener, background = false, signal, loadSessionId) {
         const max = Math.max(1, this.host.config.maxLiveSessions);
         if (!background && this.liveSessionSlots.size >= max && this.standbyPromise !== undefined) {
             await withAbort(this.standbyPromise, signal);
         }
         const unlock = await this.sessionCapacityMutex.acquire('sessions', signal);
-        const slot = { process: proc };
+        const slot = { process: proc, ...(loadSessionId !== undefined ? { sessionId: loadSessionId } : {}) };
         try {
             signal?.throwIfAborted();
             if (this.disposed || !proc.alive)
@@ -829,7 +891,7 @@ export class AntigravityRuntime {
                     if (victim === undefined)
                         break;
                     this.conversations.delete(victim.key);
-                    await withAbort(this.resetSession(victim), signal);
+                    await withAbort(this.resetSession(victim, true), signal);
                 }
             }
             if (this.disposed || !proc.alive)
@@ -846,8 +908,12 @@ export class AntigravityRuntime {
             unlock();
         }
         try {
-            const result = await proc.newSession(params, listener, 120_000);
+            const result = loadSessionId !== undefined
+                ? await proc.loadSession({ ...params, sessionId: loadSessionId }, listener, 120_000)
+                : await proc.newSession(params, listener, 120_000);
             slot.sessionId = result.sessionId;
+            if (loadSessionId !== undefined)
+                return result;
             this.unusedSessions.set(result.sessionId, proc);
             try {
                 if (proc.pid === undefined)
@@ -860,7 +926,9 @@ export class AntigravityRuntime {
             return result;
         }
         catch (error) {
-            if (proc.alive || proc.hasExited)
+            if (loadSessionId !== undefined && proc.alive)
+                await this.closeTrackedSession(proc, loadSessionId);
+            else if (proc.alive || proc.hasExited)
                 this.liveSessionSlots.delete(slot);
             throw error;
         }
@@ -1158,34 +1226,10 @@ export class AntigravityRuntime {
             const modelOption = standby.configOptions.find(o => o.id === 'model' || o.category === 'model');
             if (modelOption?.options !== undefined && !modelOption.options.some(o => o.value === model))
                 return;
-            const needModel = standby.model !== model && modelOption?.currentValue !== model;
-            const levelOption = standby.configOptions.find(o => o.id === 'thought_level' || o.category === 'thought_level');
-            const selectable = this.catalog.effortsFor(model);
-            const needLevel = selectable.length > 0 && levelOption !== undefined && standby.effort !== effort && levelOption.currentValue !== effort;
-            const currentModel = standby.model ?? modelOption?.currentValue;
-            const currentSelectable = currentModel === undefined || this.catalog.effortsFor(currentModel).length > 0;
-            if (needModel && needLevel && levelOption !== undefined && currentSelectable) {
-                const [, latestOptions] = await Promise.all([
-                    proc.setConfigOption(standby.sessionId, modelOption?.id ?? 'model', model),
-                    proc.setConfigOption(standby.sessionId, levelOption.id, effort),
-                ]);
-                standby.configOptions = latestOptions;
-                standby.model = model;
-                standby.effort = effort;
-                return;
-            }
-            if (needModel) {
-                standby.configOptions = await proc.setConfigOption(standby.sessionId, modelOption?.id ?? 'model', model);
-            }
-            standby.model = model;
-            const updatedLevel = standby.configOptions.find(o => o.id === 'thought_level' || o.category === 'thought_level');
-            if (selectable.length > 0 && updatedLevel !== undefined && standby.effort !== effort && updatedLevel.currentValue !== effort) {
-                standby.configOptions = await proc.setConfigOption(standby.sessionId, updatedLevel.id, effort);
-            }
-            standby.effort = effort;
+            await this.select(standby, proc, model, effort);
         }
-        catch (_ignore) {
-            // Background pre-configuration is best-effort; select() on acquisition enforces the target config.
+        catch (error) {
+            this.host.log.warn(`antigravity-acp: standby configuration failed; foreground selection will retry: ${String(error)}`);
         }
     }
     createSlotHandlers(slot, tenantKey) {
@@ -1293,15 +1337,15 @@ export class AntigravityRuntime {
         standby.reportedToolCalls.clear();
         conv.model = standby.model;
         conv.effort = standby.effort;
-        conv.usageCursor = -1;
+        conv.usageReader = undefined;
         conv.knownHistory = undefined;
         conv.emittedAssistant = undefined;
         conv.dirty = false;
         conv.issuedIds.clear();
     }
-    async openSession(conv, system, tools, proc, signal) {
+    async openSession(conv, system, tools, proc, signal, persisted) {
         signal?.throwIfAborted();
-        if (conv.purpose === MAIN_PURPOSE) {
+        if (persisted === undefined && conv.purpose === MAIN_PURPOSE) {
             const standby = await this.takeStandbySession(proc, system, tools, this.lastMainModel, this.lastMainEffort, signal);
             if (standby !== undefined) {
                 this.bindStandbySession(conv, standby);
@@ -1311,7 +1355,11 @@ export class AntigravityRuntime {
         }
         this.syncOAuthTokenIfNeeded();
         conv.reportedToolCalls.clear();
-        const native = this.nativeTools(tools);
+        const native = persisted === undefined ? this.nativeTools(tools) : {
+            advertisedTools: structuredClone(persisted.advertisedTools),
+            nativeToolBaselines: structuredClone(persisted.nativeToolBaselines),
+            knownTools: new Map(structuredClone(persisted.knownTools)),
+        };
         conv.advertisedTools = native.advertisedTools;
         conv.nativeToolBaselines = native.nativeToolBaselines;
         conv.knownTools = native.knownTools;
@@ -1360,7 +1408,7 @@ export class AntigravityRuntime {
                 : {
                     onUpdate: update => this.handleSessionUpdate(conv, update),
                     onPermission: request => this.answerPermission(conv, request),
-                }, false, signal);
+                }, false, signal, persisted?.sessionId);
             if (result === undefined)
                 throw new LlmError('Antigravity session capacity exhausted', 'RATE_LIMIT');
             conv.sessionId = result.sessionId;
@@ -1373,7 +1421,7 @@ export class AntigravityRuntime {
             }
             conv.model = undefined;
             conv.effort = undefined;
-            conv.usageCursor = -1;
+            conv.usageReader = undefined;
             conv.dirty = false;
             conv.issuedIds.clear();
             if (this.catalog.observe(result.configOptions, result.models?.availableModels))
@@ -1506,41 +1554,35 @@ export class AntigravityRuntime {
         if (modelOption?.options !== undefined && !modelOption.options.some(o => o.value === model)) {
             throw new LlmError(`Antigravity does not offer model "${model}" to this account; available: ${modelOption.options.map(o => o.value).join(', ')}`, 'UNKNOWN_MODEL');
         }
-        const needModel = conv.model !== model && modelOption?.currentValue !== model;
-        const levelOption = conv.configOptions.find(o => o.id === 'thought_level' || o.category === 'thought_level');
-        // Fixed-variant families (GPT-OSS) reject every thought_level change; the
-        // effort already lives in the model id, so only selectable families write it.
-        const selectable = this.catalog.effortsFor(model);
-        const needLevel = selectable.length > 0 && levelOption !== undefined && conv.effort !== effort && levelOption.currentValue !== effort;
-        const currentModel = conv.model ?? modelOption?.currentValue;
-        const currentSelectable = currentModel === undefined || this.catalog.effortsFor(currentModel).length > 0;
-        if (needModel && needLevel && levelOption !== undefined && currentSelectable) {
-            const [, latestOptions] = await Promise.all([
-                proc.setConfigOption(sessionId, modelOption?.id ?? 'model', model),
-                proc.setConfigOption(sessionId, levelOption.id, effort),
-            ]).catch((error) => { throw mapError(error); });
-            conv.configOptions = latestOptions;
-            conv.model = model;
-            conv.effort = effort;
-            if (conv.standbySlot !== undefined) {
-                conv.standbySlot.model = model;
-                conv.standbySlot.effort = effort;
+        let switched = false;
+        const write = async (id, category, value) => {
+            for (let attempt = 0; attempt < 2; attempt++) {
+                conv.configOptions = await proc.setConfigOption(sessionId, id, value).catch(error => { throw mapError(error); });
+                const option = conv.configOptions.find(o => o.id === id || o.category === category);
+                if (option?.currentValue === undefined || option.currentValue === value)
+                    return;
             }
-            return;
-        }
+            throw new LlmError(`Antigravity did not apply ${id}=${value}`, 'TRANSPORT');
+        };
+        const needModel = modelOption?.currentValue !== undefined ? modelOption.currentValue !== model : conv.model !== model;
         if (needModel) {
-            conv.configOptions = await proc.setConfigOption(sessionId, modelOption?.id ?? 'model', model).catch((error) => { throw mapError(error); });
+            await write(modelOption?.id ?? 'model', 'model', model);
+            switched = true;
         }
         conv.model = model;
+        // A model change replaces all options and can reset the reasoning level.
+        const selectable = this.catalog.effortsFor(model);
         const updatedLevelOption = conv.configOptions.find(o => o.id === 'thought_level' || o.category === 'thought_level');
-        if (selectable.length > 0 && updatedLevelOption !== undefined && conv.effort !== effort && updatedLevelOption.currentValue !== effort) {
-            conv.configOptions = await proc.setConfigOption(sessionId, updatedLevelOption.id, effort).catch((error) => { throw mapError(error); });
+        if (selectable.length > 0 && updatedLevelOption !== undefined && updatedLevelOption.currentValue !== effort) {
+            await write(updatedLevelOption.id, 'thought_level', effort);
+            switched = true;
         }
         conv.effort = effort;
         if (conv.standbySlot !== undefined) {
             conv.standbySlot.model = model;
             conv.standbySlot.effort = effort;
         }
+        return switched;
     }
     plan(conv, system, messages, history) {
         const reusable = conv.sessionId !== undefined
@@ -1598,7 +1640,11 @@ export class AntigravityRuntime {
             return conv.issuedIds.has(message.toolCallId);
         return false;
     }
-    async resetSession(conv) {
+    async resetSession(conv, keepPersisted = false) {
+        if (keepPersisted)
+            this.persistConversation(conv);
+        else
+            this.sessions.forget(conv.key);
         const sessionId = conv.sessionId;
         const proc = conv.process;
         if (conv.standbySlot !== undefined) {
@@ -1615,7 +1661,7 @@ export class AntigravityRuntime {
         conv.advertisedToolNames.clear();
         conv.knownTools.clear();
         conv.reportedToolCalls.clear();
-        conv.usageCursor = -1;
+        conv.usageReader = undefined;
         conv.knownHistory = undefined;
         conv.emittedAssistant = undefined;
         conv.issuedIds.clear();
@@ -1634,13 +1680,19 @@ export class AntigravityRuntime {
      * sessions created by the pre-warmer may enter the shared standby pool.
      */
     async recycleSession(conv) {
-        await this.resetSession(conv);
+        await this.resetSession(conv, true);
         if (this.process !== undefined)
             this.refillStandbyPool(this.process);
         return false;
     }
     startPrompt(conv, proc, blocks) {
         const turn = conv.turn;
+        if (!this.sessions.forget(conv.key)) {
+            conv.turn = undefined;
+            conv.dirty = true;
+            throw new LlmError('Could not invalidate the durable ACP session before submitting a prompt', 'TRANSPORT');
+        }
+        conv.usageReader ??= new SessionUsageReader(sessionDbPath(this.home, conv.sessionId), message => this.host.log.warn(message));
         // A claimed standby and a cold session are both unused until this point.
         // Retire ownership before sending: a lost prompt reply must never authorize
         // deletion of a session that could already contain submitted user input.
@@ -1668,20 +1720,16 @@ export class AntigravityRuntime {
                 recordUsage: (usage, steps) => {
                     this.lastTurn = { model: options.model, effort, steps, ...usage !== undefined ? { usage } : {}, at: new Date().toISOString() };
                 },
-                consumeStepUsage: async () => {
-                    const dbPath = sessionDbPath(this.home, sessionId);
-                    if (!existsSync(dbPath))
-                        return undefined;
-                    let batch = readModelStepsAfter(dbPath, conv.usageCursor);
+                consumeStepUsage: async ({ final } = {}) => {
+                    let batch = conv.usageReader?.read(final);
                     for (let attempt = 0; batch === undefined && attempt < 3; attempt++) {
-                        await delay(5);
-                        batch = readModelStepsAfter(dbPath, conv.usageCursor);
+                        await delay(15);
+                        batch = conv.usageReader?.read(final);
                     }
                     if (batch === undefined)
                         return undefined;
-                    conv.usageCursor = batch.maxIdx;
                     turn.recordStepBatch(batch);
-                    return { usage: batch.usage, calls: batch.calls };
+                    return batch;
                 },
             }, options.signal)) {
                 if (chunk.type === 'block-end') {
@@ -1720,6 +1768,10 @@ export class AntigravityRuntime {
                 }
                 conv.reportedToolCalls.clear();
                 conv.turn = undefined;
+                if (finishKind === 'stop' || finishKind === 'max-tokens')
+                    this.persistConversation(conv);
+                else
+                    this.sessions.forget(conv.key);
             }
         }
     }
@@ -1770,9 +1822,6 @@ export class AntigravityRuntime {
             // The old turn is over: its reported identities do not carry into the continuation.
             conv.reportedToolCalls.clear();
             conv.turn = new AcpTurn(this.nextTurnTag(messages));
-            if (conv.sessionId !== undefined) {
-                conv.usageCursor = peekMaxModelStepIdx(sessionDbPath(this.home, conv.sessionId));
-            }
             this.startPrompt(conv, proc, blocks);
             return true;
         }
@@ -1818,6 +1867,7 @@ export class AntigravityRuntime {
         turn.abandon(reason);
         conv.turn = undefined;
         conv.dirty = true;
+        this.sessions.forget(conv.key);
         conv.reportedToolCalls.clear();
     }
     /** A conversation is idle only when no turn is running and no session is opening. */

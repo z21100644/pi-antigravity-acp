@@ -94,7 +94,8 @@ async function readBody(req) {
 }
 
 export async function startHttpBridge({ userDir = join(homedir(), '.pi-desktop'), port = HTTP_PORT } = {}) {
-  const token = ensureBridgeToken(userDir), config = loadConfig(userDir)
+  // Request history and the runtime must use the same provider identity for reuse.
+  const token = ensureBridgeToken(userDir), config = { ...loadConfig(userDir), provider: BRIDGE_PROVIDER }
   mkdirSync(join(userDir, 'logs'), { recursive: true })
   const log = (level, message) => appendFileSync(join(userDir, 'logs/antigravity-acp.log'),
     JSON.stringify({ timestamp: new Date().toISOString(), pid: process.pid, level, message }) + '\n')

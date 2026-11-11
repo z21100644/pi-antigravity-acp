@@ -1,7 +1,7 @@
 /**
- * Read per-step model token usage written by `agy` into its local SQLite
- * conversation store (`$home/agy/conversations/<sessionId>.db`, table `steps`,
- * `step_type = 15`, `status = 3`, Protobuf `metadata` field `9`).
+ * Read generation bills and completed model-step usage written by `agy` into
+ * `$home/agy/conversations/<sessionId>.db` (`gen_metadata.data` field `1.4`,
+ * or `steps.metadata` field `9` for `step_type = 15`, `status = 3`).
  * @module omp-antigravity-acp/usage-db
  */
 import { existsSync, unlinkSync } from 'node:fs';
@@ -317,5 +317,186 @@ export function readModelStepsAfter(dbPath, afterIdx) {
     }
     catch {
         return undefined;
+    }
+}
+
+/** Validate a Protobuf message while retaining fields needed by the generation decoder. */
+function protoFields(buf) {
+    const fields = new Map();
+    let pos = 0;
+    while (pos < buf.length) {
+        const tag = readVarint(buf, pos);
+        if (tag === undefined || tag.value >> 3n === 0n)
+            return undefined;
+        pos = tag.next;
+        const field = Number(tag.value >> 3n), wire = Number(tag.value & 7n);
+        if (wire === 0) {
+            const value = readVarint(buf, pos);
+            if (value === undefined)
+                return undefined;
+            fields.set(field, { wire, value: value.value });
+            pos = value.next;
+        }
+        else if (wire === 1 || wire === 5) {
+            pos += wire === 1 ? 8 : 4;
+            if (pos > buf.length)
+                return undefined;
+        }
+        else if (wire === 2) {
+            const length = readVarint(buf, pos);
+            if (length === undefined || length.value > BigInt(buf.length - length.next))
+                return undefined;
+            const end = length.next + Number(length.value);
+            fields.set(field, { wire, bytes: buf.subarray(length.next, end) });
+            pos = end;
+        }
+        else {
+            return undefined;
+        }
+    }
+    return fields;
+}
+function emptyUsage() {
+    return { inputTokens: 0, outputTokens: 0, cachedReadTokens: 0, cachedWriteTokens: 0, thoughtTokens: 0 };
+}
+const TOKEN_FIELDS = ['inputTokens', 'outputTokens', 'cachedReadTokens', 'cachedWriteTokens', 'thoughtTokens'];
+/** Generation field paths follow dsh-plugin-bundle v0.4.0 (MIT). */
+export function decodeGenMetadata(data) {
+    const chatBytes = protoFields(data)?.get(1)?.bytes;
+    if (chatBytes === undefined)
+        return undefined;
+    const chat = protoFields(chatBytes);
+    if (chat === undefined)
+        return undefined;
+    const usageBytes = chat.get(4)?.bytes;
+    const stats = emptyUsage();
+    if (usageBytes !== undefined && !parseModelUsageSubmessage(usageBytes, stats))
+        return undefined;
+    const start = chat.get(9)?.bytes;
+    const context = start === undefined ? undefined : protoFields(start)?.get(10)?.bytes;
+    const estimate = context === undefined ? undefined : protoFields(context)?.get(1);
+    const cwmEstTokens = estimate?.wire === 0 ? toNonNegativeCount(estimate.value) : undefined;
+    if (usageBytes === undefined && cwmEstTokens === undefined)
+        return undefined;
+    return { ...stats, ...(cwmEstTokens !== undefined ? { cwmEstTokens } : {}) };
+}
+function bytesOf(value) {
+    return ArrayBuffer.isView(value) ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength) : undefined;
+}
+function usageSnapshot(dbPath) {
+    if (!existsSync(dbPath))
+        return undefined;
+    const Database = loadDatabaseSync();
+    if (Database === undefined)
+        throw new Error('node:sqlite is unavailable');
+    const db = new Database(dbPath, { readOnly: true, timeout: 100 });
+    try {
+        // Both tables must describe one SQLite snapshot, including a concurrent WAL commit.
+        db.exec('BEGIN');
+        const steps = db.prepare('SELECT idx, metadata FROM steps WHERE step_type = 15 AND status = 3 ORDER BY idx').all()
+            .flatMap(row => {
+                const bytes = bytesOf(row.metadata);
+                const usage = bytes === undefined ? undefined : decodeModelUsageStats(bytes);
+                return usage === undefined ? [] : [{ idx: Number(row.idx), ...usage }];
+            });
+        const hasGen = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'gen_metadata'").get() !== undefined;
+        const generations = hasGen ? db.prepare('SELECT idx, data FROM gen_metadata ORDER BY idx').all()
+            .flatMap(row => {
+                const bytes = bytesOf(row.data);
+                const usage = bytes === undefined ? undefined : decodeGenMetadata(bytes);
+                return usage === undefined || !TOKEN_FIELDS.some(field => usage[field] > 0)
+                    ? [] : [{ idx: Number(row.idx), ...usage }];
+            }) : undefined;
+        return { steps, generations };
+    }
+    finally {
+        db.close();
+    }
+}
+/** Count identical bills by occurrence; equal token counts can belong to several calls. */
+function billsByUsage(records) {
+    const bills = new Map();
+    for (const record of records) {
+        const key = JSON.stringify(TOKEN_FIELDS.map(field => record[field]));
+        const group = bills.get(key) ?? { count: 0, usage: record };
+        group.count++;
+        bills.set(key, group);
+    }
+    return bills;
+}
+/**
+ * A session's generation bills and completed-step fallback share one accounting ledger.
+ * Re-read records rather than assuming either table's indices or completion order match.
+ * A late generation that matches a back-filled step consumes the same occurrence.
+ */
+export class SessionUsageReader {
+    reported = new Map();
+    lastError;
+    constructor(dbPath, warn = () => undefined) {
+        this.dbPath = dbPath;
+        this.warn = warn;
+        this.primed = !existsSync(dbPath);
+        const snapshot = this.snapshot();
+        if (snapshot !== undefined)
+            this.prime(snapshot);
+    }
+    prime(snapshot) {
+        const steps = billsByUsage(snapshot.steps), generations = billsByUsage(snapshot.generations ?? []);
+        for (const [key, group] of [...steps, ...generations])
+            this.reported.set(key, Math.max(group.count, this.reported.get(key) ?? 0));
+        this.primed = true;
+    }
+    snapshot() {
+        try {
+            const snapshot = usageSnapshot(this.dbPath);
+            this.lastError = undefined;
+            return snapshot;
+        }
+        catch (error) {
+            const message = String(error);
+            if (message !== this.lastError)
+                this.warn(`antigravity-acp: usage DB unavailable (${this.dbPath}); falling back to ACP usage: ${message}`);
+            this.lastError = message;
+            return undefined;
+        }
+    }
+    read(final = false) {
+        const snapshot = this.snapshot();
+        if (snapshot === undefined)
+            return undefined;
+        if (!this.primed) {
+            // A locked restored DB must never cause its historical bills to be re-emitted.
+            // The native ACP fallback covers this first request while the baseline recovers.
+            this.prime(snapshot);
+            return undefined;
+        }
+        const steps = billsByUsage(snapshot.steps);
+        const generations = billsByUsage(snapshot.generations ?? []);
+        const eligible = snapshot.generations === undefined ? steps : new Map(generations);
+        if (final && snapshot.generations !== undefined) {
+            for (const [key, group] of steps) {
+                if (group.count > (eligible.get(key)?.count ?? 0))
+                    eligible.set(key, group);
+            }
+        }
+        const usage = emptyUsage();
+        let calls = 0, backfilled = 0;
+        for (const [key, group] of eligible) {
+            const count = Math.max(0, group.count - (this.reported.get(key) ?? 0));
+            if (count === 0)
+                continue;
+            calls += count;
+            if (snapshot.generations !== undefined && group.count > (generations.get(key)?.count ?? 0))
+                backfilled += count;
+            for (const field of TOKEN_FIELDS)
+                usage[field] += group.usage[field] * count;
+            this.reported.set(key, group.count);
+        }
+        if (calls === 0)
+            return undefined;
+        usage.totalTokens = usage.inputTokens + usage.cachedReadTokens + usage.cachedWriteTokens + usage.outputTokens;
+        if (backfilled > 0)
+            this.warn(`antigravity-acp: usage-gap ${this.dbPath}: back-filled ${backfilled} completed model step(s)`);
+        return { calls, usage, exact: true };
     }
 }

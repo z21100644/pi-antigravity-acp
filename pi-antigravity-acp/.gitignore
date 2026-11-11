@@ -5,3 +5,7 @@ node_modules/
 *.db-wal
 *.db-shm
 .DS_Store
+coverage/
+session-index.json
+session-index.json.*.tmp
+bridge-token

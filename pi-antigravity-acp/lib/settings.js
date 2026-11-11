@@ -5,6 +5,7 @@ import { DEFAULT_CONFIG, EFFORTS } from "./config.js";
 const NUMBER_BOUNDS = {
     contextWindow: [0, Number.MAX_SAFE_INTEGER], maxLiveSessions: [1, 64],
     idleSessionTtlMs: [10_000, Number.MAX_SAFE_INTEGER], parkSettleMs: [0, 5_000],
+    coldSwitchSettleMs: [0, 2_000],
     keepAliveMs: [1_000, Number.MAX_SAFE_INTEGER], relayAfterMs: [5_000, 165_000],
     longDecodeContinuations: [0, 16], quotaTtlMs: [5_000, Number.MAX_SAFE_INTEGER],
 };

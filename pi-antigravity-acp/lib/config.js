@@ -17,6 +17,7 @@ export const DEFAULT_CONFIG = {
     maxLiveSessions: 16,
     idleSessionTtlMs: 30 * 60_000,
     parkSettleMs: 250,
+    coldSwitchSettleMs: 80,
     keepAliveMs: 15_000,
     relayAfterMs: 85_000,
     longDecodeContinuations: 3,

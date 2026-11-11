@@ -93,6 +93,14 @@ export class AcpProcess {
         this.listeners.set(result.sessionId, listener);
         return result;
     }
+    /** Load durable history before attaching the live-output listener. */
+    async loadSession(params, listener, timeoutMs) {
+        const result = await this.link().request('session/load', params, { timeoutMs });
+        const sessionId = typeof result?.sessionId === 'string' && result.sessionId.length > 0
+            ? result.sessionId : params.sessionId;
+        this.listeners.set(sessionId, listener);
+        return { ...result, sessionId };
+    }
     /**
      * Select one configuration option value.
      * @param sessionId - ACP session.
