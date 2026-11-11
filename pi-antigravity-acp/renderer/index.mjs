@@ -120,12 +120,14 @@ function Monitor() {
     const place = () => {
       const anchor = trigger.current?.getBoundingClientRect(), popup = panel.current
       if (!anchor || !popup) return
-      const width = popup.offsetWidth
+      const { width, height } = popup.getBoundingClientRect()
+      const margin = open ? 12 : 8, gap = open ? 10 : 8
       const start = open ? anchor.left - 8 : anchor.left + (anchor.width - width) / 2
-      const left = Math.max(12, Math.min(start, window.innerWidth - width - 12))
-      const height = popup.offsetHeight
-      const top = anchor.top - height - 10 >= 12 ? anchor.top - height - 10
-        : Math.max(12, Math.min(anchor.bottom + 10, window.innerHeight - height - 12))
+      const left = Math.max(margin, Math.min(start, window.innerWidth - width - margin))
+      const above = anchor.top - height - gap
+      const top = above >= margin ? above : open
+        ? Math.max(margin, Math.min(anchor.bottom + gap, window.innerHeight - height - margin))
+        : anchor.bottom + gap
       setPosition(previous => previous?.left === left && previous.top === top ? previous : { left, top })
     }
     const schedule = () => { cancelAnimationFrame(frame); frame = requestAnimationFrame(place) }
@@ -208,7 +210,7 @@ const CSS = `
 .agy-bucket:hover{background:var(--agy-hover)}
 .agy-row{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:4px;color:var(--agy-secondary)}
 .agy-quota-value{color:var(--agy-text);font-weight:500;font-variant-numeric:tabular-nums}
-.agy-trigger-tooltip{transform:none;width:max-content;max-width:calc(100vw - 24px);white-space:normal;overflow-wrap:anywhere}
+.agy-trigger-tooltip{transform:none;width:max-content;max-width:calc(100vw - 16px);white-space:normal;overflow-wrap:anywhere}
 .agy-reset-tooltip{display:none;position:absolute;left:3px;bottom:calc(100% + 4px);transform:none;z-index:1;width:max-content;max-width:calc(100% - 6px);white-space:normal;overflow-wrap:anywhere}
 .agy-bucket:hover>.agy-reset-tooltip,.agy-bucket:focus-visible>.agy-reset-tooltip{display:block}
 .agy-empty{margin:0;color:var(--agy-secondary)}
