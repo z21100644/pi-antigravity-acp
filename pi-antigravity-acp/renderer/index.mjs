@@ -60,6 +60,32 @@ function Monitor() {
     live.current = true
     return () => { live.current = false; clearTimeout(hintTimer.current) }
   }, [])
+  React.useLayoutEffect(() => {
+    const button = trigger.current, composer = button?.closest('.composer-right')
+    if (!composer) return
+    let reference
+    const setHeight = height => {
+      if (height > 0) button.style.setProperty('--agy-control-height', `${height}px`)
+      else button.style.removeProperty('--agy-control-height')
+    }
+    const resize = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        if (entry.target === reference) setHeight(entry.borderBoxSize[0].blockSize)
+      }
+    })
+    const bind = () => {
+      const next = composer.querySelector('.context-inspector-trigger')
+      if (next === reference) return
+      resize.disconnect()
+      reference = next
+      setHeight(reference?.offsetHeight ?? 0)
+      if (reference) resize.observe(reference, { box: 'border-box' })
+    }
+    const changes = new MutationObserver(bind)
+    changes.observe(composer, { childList: true, subtree: true })
+    bind()
+    return () => { resize.disconnect(); changes.disconnect() }
+  }, [])
   React.useEffect(() => {
     let stopped = false, timer, polling = false
     const poll = async () => {
@@ -162,7 +188,7 @@ function Monitor() {
 
 const CSS = `
 .agy-quota-button,.agy-monitor-backdrop{--agy-text:var(--ds-text-primary,#eeeef0);--agy-secondary:var(--ds-text-secondary,#a2a2a2);--agy-border:color-mix(in srgb,var(--agy-text) 13%,transparent);--agy-track:color-mix(in srgb,var(--agy-text) 15%,transparent);--agy-meter:light-dark(#5ca98c,#78bfa3);--agy-hover:color-mix(in srgb,var(--agy-text) 8%,transparent);color:var(--agy-text);font-family:inherit}
-.agy-quota-button{display:inline-flex;align-items:center;gap:4px;min-height:28px;box-sizing:border-box;margin:0;padding:3px 8px 3px 5px;border:0;border-radius:var(--radius-full,9999px);background:transparent;font:inherit;font-size:var(--text-xs,14px);font-weight:var(--font-weight-semibold,500);line-height:var(--leading-compact,20px);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
+.agy-quota-button{display:inline-flex;align-items:center;gap:4px;height:var(--agy-control-height,28px);min-height:0;box-sizing:border-box;margin:0;padding:0 8px 0 5px;border:0;border-radius:var(--radius-full,9999px);background:transparent;font:inherit;font-size:var(--text-xs,14px);font-weight:var(--font-weight-semibold,500);line-height:var(--leading-compact,20px);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
 .agy-quota-button:hover{background:color-mix(in oklab,currentColor 8%,transparent)}
 .agy-quota-button{transition:background var(--motion-duration-fast,120ms) var(--motion-ease-out,ease-out),color var(--motion-duration-fast,120ms) var(--motion-ease-out,ease-out)}
 .agy-quota-button[aria-expanded=true]{background:color-mix(in oklab,currentColor 12%,transparent)}
