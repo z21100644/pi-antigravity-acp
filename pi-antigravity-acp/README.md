@@ -42,6 +42,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pi-antigravity-acp\scripts
 
 日志中的 `Local HTTP → ACP` 表示请求已进入桥接。若仍出现 OpenAI 的 API key 错误，重新运行安装器并重启 PI Desktop，确认 provider 指向上述本机端点。诊断和缓存文件不应提交到仓库。
 
+Windows 后台启动的 ACP 主进程、额度查询和安装登记均设置 `windowsHide: true`。ACP 保留 stdin/stdout/stderr 管线，由插件管理退出；冷启动、warmup 和重新建立前端进程共用这条启动路径。无需切换安装版或关闭 warmup。更新后已启动的旧进程需由插件重新载入或 PI Desktop 重启替换。
+
 ## 会话恢复与用量
 
 - 已完成的主对话保存在 ACP 数据目录的 `session-index.json`，通过临时文件和 rename 更新。PI Desktop 重启或空闲会话被淘汰后，插件会检查 system 和历史内容指纹，使用 `session/load` 恢复原 ACP session，并重新绑定 MCP 端点。历史被改写、压缩或加载失败时，从 PI 的历史重建；每次新 prompt 提交前撤销索引，避免恢复未完成的原生上下文。

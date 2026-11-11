@@ -15,7 +15,7 @@ function childEnvironment() {
     return env;
 }
 export const spawnAcp = (argv, cwd) => {
-    const child = spawn(argv[0], argv.slice(1), { cwd, env: childEnvironment(), stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(argv[0], argv.slice(1), { cwd, env: childEnvironment(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     let stderr = '';
     child.stderr.on('data', (data) => { stderr = (stderr + data.toString()).slice(-64 * 1024); });
     const { promise: exited, resolve } = Promise.withResolvers();
