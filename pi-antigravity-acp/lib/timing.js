@@ -1,7 +1,7 @@
 /** Opt-in monotonic timings without prompt, argument, result, or credential data. */
 import { performance } from 'node:perf_hooks';
 let nextRequestId = 0;
-/** One OMP stream request; all offsets are relative to its entry time. */
+/** One PI Desktop stream request; all offsets are relative to its entry time. */
 export class RequestTiming {
     log;
     started = performance.now();

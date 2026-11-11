@@ -1,6 +1,6 @@
 /**
- * Plain configuration for the OMP Antigravity ACP extension.
- * @module omp-antigravity-acp/config
+ * Plain configuration for the PI Desktop Antigravity ACP extension.
+ * @module pi-antigravity-acp/config
  */
 /** Reasoning effort ids accepted by the Antigravity ACP `thought_level` option. */
 export const EFFORTS = ['low', 'medium', 'high'];

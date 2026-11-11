@@ -8,6 +8,8 @@
 
 当前已验证 **Windows、PI Desktop 0.22.0、agy 1.5.5**。先安装并登录[官方 agy CLI](https://antigravity.google/docs/getting-started?tab=cli)，然后关闭 PI Desktop。
 
+插件要求 **agy >= 1.5.1**。从该版本起，官方 ACP 向所有客户端提供账号可用的全部模型；插件以 `pi-desktop` 声明客户端身份。
+
 ```powershell
 git clone https://github.com/z21100644/pi-antigravity-acp.git
 cd pi-antigravity-acp
@@ -20,10 +22,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pi-antigravity-acp\scripts
 
 安装器会备份已有插件，登记模型，并自动生成、保存本机桥接 token。**无需提供 OpenAI API key**。使用原生插件安装器，保留 `manifest.json`；PI Desktop 的 **Import pi extension** 会重建 manifest 并丢失 provider 声明，不适用于此包。
 
+0.3.0 的插件 ID 为 `pi-antigravity-acp`，provider ID 为 `plugin:pi-antigravity-acp:antigravity`。从旧 ID `imported.omp-antigravity-acp` 升级时，安装器迁移私有数据、注销旧插件并将旧文件移入备份。旧对话的 provider 引用不迁移；重启后在新对话中选择新版 Antigravity ACP。
+
 ## 配置与排查
 
 - 配置：`~/.pi-desktop/antigravity-acp.json`。
 - ACP 数据：`~/.pi-desktop/cache/antigravity-acp/`。
+- 插件私有数据：`~/.pi-desktop/plugins/data/pi-antigravity-acp/`。
 - 日志：`~/.pi-desktop/logs/antigravity-acp.log`。
 - 本机端点：`http://127.0.0.1:32187/v1`，仅监听本机并验证生成的 bearer token。
 
@@ -58,6 +63,8 @@ Windows 后台启动的 ACP 主进程、额度查询和安装登记均设置 `wi
 
 已在 PI Desktop 0.22.0、agy 1.5.5 上验证带历史对话的完整进程重启：续问仍沿用原 ACP session ID，并正确回忆此前保存的验证信息。日志中的 `antigravity-acp: restored session <id>` 仅在恢复后的复用计划成立时记录；最终索引也应保留相同 ID。
 
+原生 agent 为 `pi-desktop-bridge`，MCP server 为 `pi`，工具使用 `mcp_pi_*` 前缀；辅助工具为 `pi_call_tool` 与 `pi_await_result`，历史重放使用 `<pi_history>`。恢复索引记录工具命名空间，避免把旧声明载入新版运行环境。
+
 ## 实时额度面板
 
 输入框工具栏显示 **Gemini / Claude/GPT 5h · 每周** 剩余比例，点击打开 **Usage Monitor**。面板列出两个模型组的五小时与每周额度、重置时间、官方快照时间，以及当前对话的本轮 token。按钮优先显示此对话最近一次 AGY 请求的模型组；尚无请求时显示 Gemini，展开后始终能看到全部组。
@@ -77,7 +84,7 @@ Windows 后台启动的 ACP 主进程、额度查询和安装登记均设置 `wi
 npm test
 ```
 
-测试使用本机 fake ACP，覆盖 HTTP 历史转换、重启恢复、用量对账、工具交接、取消、standby 清理，以及额度缓存、节流、过期快照和流中监控。实际对话、截图、日志、数据库和安装备份应保存在仓库之外。
+测试使用 `tests/fake-agy.mjs` 模拟 ACP 协议，覆盖 HTTP 历史转换、重启恢复、用量对账、工具交接、取消、standby 清理，以及额度缓存、节流、过期快照和流中监控。它仅用于测试，不随插件安装。实际对话、截图、日志、数据库和安装备份应保存在仓库之外。
 
 ## 来源
 

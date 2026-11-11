@@ -3,7 +3,7 @@
  * Client Protocol) v1 frames one JSON message per line on stdio; this peer
  * multiplexes outgoing requests, dispatches incoming requests and
  * notifications, and fails every pending request when the transport closes.
- * @module omp-antigravity-acp/jsonrpc
+ * @module pi-antigravity-acp/jsonrpc
  */
 /** A request the remote peer answered with a JSON-RPC error. */
 export class JsonRpcRemoteError extends Error {

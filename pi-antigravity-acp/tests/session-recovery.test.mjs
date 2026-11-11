@@ -26,7 +26,7 @@ const request = extra => ({ provider: 'antigravity', model: 'gemini-4-argon', se
   messages: [{ role: 'user', content: [{ type: 'text', text: 'Hello.' }] }], ...extra })
 
 async function fixture(maxLiveSessions = 3) {
-  const home = mkdtempSync(join(tmpdir(), 'omp-session-recovery-'))
+  const home = mkdtempSync(join(tmpdir(), 'pi-session-recovery-'))
   const log = join(home, 'prompts.jsonl'), warnings = []
   const runtime = new AntigravityRuntime({
     config: { ...DEFAULT_CONFIG, command: join(import.meta.dirname, 'fake-agy.mjs'), home,

@@ -20,7 +20,7 @@ export class UnusedSessionLedger {
     constructor(home, warn, isAlive = processIsAlive) {
         this.warn = warn;
         this.isAlive = isAlive;
-        this.directory = join(home, 'agy', 'omp-unused-sessions');
+        this.directory = join(home, 'agy', 'pi-unused-sessions');
     }
     /** A crash during this write leaves an invalid record that recovery ignores. */
     track(sessionId, nativePid = process.pid) {

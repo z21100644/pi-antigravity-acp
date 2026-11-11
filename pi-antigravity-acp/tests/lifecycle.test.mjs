@@ -17,7 +17,7 @@ const runtimes = []
 after(async () => { for (const runtime of runtimes) await runtime.dispose() })
 
 function fixture(overrides = {}, configOverrides = {}) {
-  const home = mkdtempSync(join(tmpdir(), 'omp-lifecycle-'))
+  const home = mkdtempSync(join(tmpdir(), 'pi-lifecycle-'))
   const log = join(home, 'prompts.jsonl')
   let spawned = 0
   const runtime = new AntigravityRuntime({

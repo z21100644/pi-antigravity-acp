@@ -1,10 +1,10 @@
 /**
  * Process, session, and conversation orchestration for the Antigravity ACP
- * provider. One `agy acp` front serves every conversation; each OMP session
+ * provider. One `agy acp` front serves every conversation; each PI Desktop session
  * (and each auxiliary purpose within it) owns one ACP session whose history
  * advances incrementally, so subagents and the main conversation run
  * concurrently without sharing a turn.
- * @module omp-antigravity-acp/runtime
+ * @module pi-antigravity-acp/runtime
  */
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { existsSync } from 'node:fs';
@@ -147,6 +147,7 @@ export class AntigravityRuntime {
             return;
         this.sessions.save(conv.key, {
             sessionId: conv.sessionId,
+            mcpServer: MCP_SERVER_NAME,
             workspace: this.preflight?.workspace ?? this.home,
             numericEnumMode: this.host.config.numericEnumMode,
             systemHash: conv.systemHash,
@@ -164,6 +165,11 @@ export class AntigravityRuntime {
         const entry = this.sessions.get(conv.key);
         if (entry === undefined)
             return false;
+        if (entry.mcpServer !== MCP_SERVER_NAME) {
+            this.host.log.info(`antigravity-acp: session tool namespace changed (${entry.sessionId}); rebuilding from PI history`);
+            this.sessions.forget(conv.key);
+            return false;
+        }
         const candidate = { ...conv, systemHash: entry.systemHash, knownHistory: entry.knownHistory, emittedAssistant: entry.emittedAssistant };
         if (entry.workspace !== (this.preflight?.workspace ?? this.home)
             || entry.numericEnumMode !== this.host.config.numericEnumMode || !this.historyPrefixIntact(candidate, system, history)) {
@@ -479,7 +485,7 @@ export class AntigravityRuntime {
         this.startupLease = undefined;
     }
     /**
-     * Stream one OMP model step.
+     * Stream one PI Desktop model step.
      * @param options - the model request.
      * @yields stream chunks.
      */
@@ -505,7 +511,7 @@ export class AntigravityRuntime {
             options.signal?.throwIfAborted();
             const split = splitSystem(options);
             const history = snapshotHistory(split.messages);
-            // OMP retains tool schemas on compaction calls for provider prefix reuse.
+            // PI Desktop retains tool schemas on compaction calls for provider prefix reuse.
             // The summarizer cannot execute tool calls: do not expose MCP or tool deltas.
             const tools = purpose === COMPACTION_PURPOSE || purpose === TEXT_ONLY_PURPOSE ? [] : toBridgeTools(options.tools);
             const effort = this.effectiveEffort(options.model, options.reasoningEffort ?? this.defaultEffort());
@@ -536,7 +542,7 @@ export class AntigravityRuntime {
                 // checkpoint or a pruned/rewritten prefix means the live server-side
                 // context is stale: resolving the parked calls would grow it further
                 // instead of adopting the compacted history, so abandon the turn and
-                // let plan() rebuild the session from OMP's authoritative messages.
+                // let plan() rebuild the session from PI Desktop's authoritative messages.
                 if (!this.historyPrefixIntact(conv, split.system, history)) {
                     this.dropTurn(conv, 'The conversation history was compacted or rewritten; rebuilding the session from the harness history.');
                 }
@@ -751,10 +757,8 @@ export class AntigravityRuntime {
                 argv,
                 cwd: preflight.workspace,
                 spawn: this.host.spawnAcp,
-                // The ACP server only advertises Claude and GPT-OSS to clients on its
-                // JetBrains/Zed/Xcode allowlist; this prefix is what unlocks them.
-                clientName: 'jetbrains.omp',
-                clientVersion: '1.1.8',
+                clientName: 'pi-desktop',
+                clientVersion: '0.3.0',
                 log: message => this.host.log.warn(message),
             });
             const startingProcess = proc;
@@ -1518,7 +1522,7 @@ export class AntigravityRuntime {
     /**
      * Decide one `session/request_permission` from structured host-reported
      * metadata only. `title` and `rawInput` are never matched against tool
-     * names: a native tool whose payload merely contains `mcp_omp_…` or a
+     * names: a native tool whose payload merely contains `mcp_pi_…` or a
      * spoofed title must not unlock the bridge.
      */
     answerPermission(conv, request) {
@@ -1671,7 +1675,7 @@ export class AntigravityRuntime {
      * prefix or changed leading system prompt forces a rebuild. Appending new
      * policy text cannot revoke earlier native instructions or private data.
      * @param conv - conversation owning the ACP session.
-     * @param system - current OMP system prompt.
+     * @param system - current PI Desktop system prompt.
      * @param history - current model-facing fingerprints after leading system messages.
      * @returns true when only new messages were appended.
      */
@@ -1684,7 +1688,7 @@ export class AntigravityRuntime {
         if (!intact)
             return false;
         // The latest output is already native ACP history even though it was not
-        // present in the preceding OMP request. Check it before skipping own output.
+        // present in the preceding PI Desktop request. Check it before skipping own output.
         if (conv.emittedAssistant !== undefined && history[known.length]?.fingerprint !== conv.emittedAssistant)
             return false;
         return conv.systemHash === digest(system);
@@ -1822,13 +1826,13 @@ export class AntigravityRuntime {
         }
         finally {
             // Closing the iterator also ends the step. Only a completed tool handoff
-            // keeps its ACP turn alive for OMP to supply the results.
+            // keeps its ACP turn alive for PI Desktop to supply the results.
             if (finishKind !== 'tool-calls') {
                 if (finishKind === undefined) {
                     this.dropTurn(conv, 'The harness stopped reading this request.');
                 }
                 else if (finishKind === 'aborted') {
-                    // A cancelled turn leaves partial agent-side history; rebuild from OMP history next time.
+                    // A cancelled turn leaves partial agent-side history; rebuild from PI Desktop history next time.
                     await turnSettled(turn, 5_000);
                     conv.dirty = true;
                 }
@@ -2427,12 +2431,12 @@ function lowerNumericEnums(tool) {
     });
     return supported ? { tool: { ...tool, inputSchema: schema }, rules } : undefined;
 }
-/** Reject lowered-enum violations before creating a OMP tool call on either MCP path. */
+/** Reject lowered-enum violations before creating a PI Desktop tool call on either MCP path. */
 function invalidNumericEnum(rules, args) {
     for (const rule of rules ?? []) {
         const visit = (value, index, location) => {
             if (value === undefined)
-                return undefined; // Required fields remain owned by the original OMP schema.
+                return undefined; // Required fields remain owned by the original PI Desktop schema.
             if (index === rule.path.length) {
                 if (typeof value !== 'number' || !Number.isFinite(value) || (rule.type === 'integer' && !Number.isInteger(value)) || !rule.values.includes(value)) {
                     return `Invalid numeric enum at ${location}: expected ${rule.type} in ${JSON.stringify(rule.values)}.`;
@@ -2442,7 +2446,7 @@ function invalidNumericEnum(rules, args) {
             const part = rule.path[index];
             if (part === null) {
                 // JSON Schema items/properties apply only to matching containers.
-                // The original OMP schema owns container types, including nullable ones.
+                // The original PI Desktop schema owns container types, including nullable ones.
                 if (!Array.isArray(value))
                     return undefined;
                 for (const [itemIndex, item] of value.entries()) {
@@ -2518,7 +2522,7 @@ async function turnSettled(turn, timeoutMs) {
     }
 }
 /**
- * Map transport and agent failures onto stable OMP failure codes.
+ * Map transport and agent failures onto stable PI Desktop failure codes.
  * @param error - the failure.
  * @returns an LlmError.
  */

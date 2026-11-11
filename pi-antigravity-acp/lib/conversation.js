@@ -1,14 +1,14 @@
 /**
  * Per-conversation ACP session state and the turn pump that maps one ACP
- * prompt turn onto OMP model steps.
+ * prompt turn onto PI Desktop model steps.
  *
- * An ACP prompt turn can span many model calls: the agent calls a OMP tool
- * through the MCP bridge, the call parks, and the pump ends the current OMP
- * step with `finish(tool-calls)`. OMP runs the tool through its own pipeline
+ * An ACP prompt turn can span many model calls: the agent calls a PI Desktop tool
+ * through the MCP bridge, the call parks, and the pump ends the current PI Desktop
+ * step with `finish(tool-calls)`. PI Desktop runs the tool through its own pipeline
  * and opens the next step with the result, which resolves the parked call and
  * resumes the same ACP turn. Parked calls that outlive the agent's MCP
- * deadline are relayed through the `omp_await_result` tool.
- * @module omp-antigravity-acp/conversation
+ * deadline are relayed through the `pi_await_result` tool.
+ * @module pi-antigravity-acp/conversation
  */
 import { LlmError, ToolCallId } from "./protocol.js";
 import { AGENT_TOOL_PREFIX, CALL_TOOL_NAME } from "./history.js";
@@ -51,8 +51,8 @@ export function classifyOutputLimitNotice(raw) {
         return 'hold';
     return 'emit';
 }
-/** Tool the agent calls to keep waiting on a relayed OMP tool result. */
-export const AWAIT_TOOL_NAME = 'omp_await_result';
+/** Tool the agent calls to keep waiting on a relayed PI Desktop tool result. */
+export const AWAIT_TOOL_NAME = 'pi_await_result';
 /** MCP descriptor of {@link AWAIT_TOOL_NAME}. */
 export const AWAIT_TOOL = {
     name: AWAIT_TOOL_NAME,
@@ -66,11 +66,11 @@ export const AWAIT_TOOL = {
 /** Compact MCP descriptor of {@link CALL_TOOL_NAME}. */
 export const CALL_TOOL = {
     name: CALL_TOOL_NAME,
-    description: 'Invoke a harness tool by exact name when its native mcp_omp_<name> declaration is absent or harness_tool_update supplies a changed parameter schema.',
+    description: 'Invoke a harness tool by exact name when its native mcp_pi_<name> declaration is absent or harness_tool_update supplies a changed parameter schema.',
     inputSchema: {
         type: 'object',
         properties: {
-            name: { type: 'string', description: 'Exact OMP tool name without mcp_omp_ prefix.' },
+            name: { type: 'string', description: 'Exact PI Desktop tool name without mcp_pi_ prefix.' },
             arguments: { type: 'object', description: 'Arguments object matching that tool schema.' },
         },
         required: ['name'],
@@ -80,11 +80,11 @@ export const CALL_TOOL = {
 export class AcpTurn {
     turnTag;
     events = new AsyncQueue();
-    /** Calls handed to OMP whose results have not arrived yet. */
+    /** Calls handed to PI Desktop whose results have not arrived yet. */
     pendingCalls = new Map();
     /** Calls the agent issued during this turn. */
     calls = new Map();
-    /** OMP steps this turn has ended with `tool-calls`. */
+    /** PI Desktop steps this turn has ended with `tool-calls`. */
     toolSteps = 0;
     /** Long-decode continuations sent in this turn. */
     continuations = 0;
@@ -136,7 +136,7 @@ export class AcpTurn {
     }
     /**
      * Register one agent tool call.
-     * @param name - OMP tool name.
+     * @param name - PI Desktop tool name.
      * @param args - parsed arguments.
      * @returns the parked call.
      */
@@ -245,9 +245,9 @@ export class AcpTurn {
     }
 }
 /**
- * Map one completed prompt or step sample to OMP token usage. When a single
+ * Map one completed prompt or step sample to PI Desktop token usage. When a single
  * sample spanned `calls` internal model steps (tool rounds or continuations),
- * prompt buckets are normalized by `calls` so OMP's native ContextMeter reflects
+ * prompt buckets are normalized by `calls` so PI Desktop's native ContextMeter reflects
  * single-request context occupancy rather than the multi-step sum.
  *
  * `agy acp` reports `inputTokens` as uncached input only, disjoint from
@@ -255,7 +255,7 @@ export class AcpTurn {
  * reported and the total is their sum.
  * @param usage - the agent's step or turn usage.
  * @param calls - model calls executed inside this sample (>= 1).
- * @returns OMP usage.
+ * @returns PI Desktop usage.
  */
 export function toTokenUsage(usage, calls = 1) {
     if (usage === undefined)
@@ -278,11 +278,11 @@ export function toTokenUsage(usage, calls = 1) {
     };
 }
 /**
- * Stream one OMP step out of the running turn.
+ * Stream one PI Desktop step out of the running turn.
  * @param turn - the running ACP turn.
  * @param host - owner effects.
- * @param signal - OMP cancellation.
- * @yields OMP stream chunks ending with one finish chunk.
+ * @param signal - PI Desktop cancellation.
+ * @yields PI Desktop stream chunks ending with one finish chunk.
  */
 export async function* pumpStep(turn, host, signal) {
     let index = 0;
@@ -312,7 +312,7 @@ export async function* pumpStep(turn, host, signal) {
     const isAborted = () => signal?.aborted === true;
     for (;;) {
         const ready = await turn.events.wait(signal);
-        // A ready queue can outlive cancellation; never hand its calls to OMP.
+        // A ready queue can outlive cancellation; never hand its calls to PI Desktop.
         if (!ready || isAborted()) {
             yield* abort();
             return;
@@ -445,7 +445,7 @@ export async function* pumpStep(turn, host, signal) {
     }
 }
 /**
- * Notice returned to the agent when a OMP tool outlives the MCP call deadline.
+ * Notice returned to the agent when a PI Desktop tool outlives the MCP call deadline.
  * @param call - the still-running call.
  * @returns MCP result instructing the agent to keep waiting.
  */

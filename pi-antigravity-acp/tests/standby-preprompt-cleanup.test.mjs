@@ -29,7 +29,7 @@ function database(home, id) {
   return path
 }
 async function fixture({ failConfig = false, readImage = async () => undefined } = {}) {
-  const home = fs.mkdtempSync(join(tmpdir(), 'omp-standby-preprompt-')), children = [], warnings = []
+  const home = fs.mkdtempSync(join(tmpdir(), 'pi-standby-preprompt-')), children = [], warnings = []
   const runtime = new AntigravityRuntime({
     config: { ...DEFAULT_CONFIG, home, command: join(import.meta.dirname, 'fake-agy.mjs'), warmup: false, autoPatch: false, maxLiveSessions: 1, patchScript: join(home, 'absent.py') },
     spawnAcp: (argv, cwd) => {
@@ -52,7 +52,7 @@ async function fixture({ failConfig = false, readImage = async () => undefined }
   const proc = f.proc = await runtime.ensureReady(), entry = f.entry = runtime.standbyPool[0]
   assert.ok(entry)
   f.path = database(home, entry.sessionId); f.legacy = database(home, 'legacy-empty')
-  f.marker = join(home, 'agy', 'omp-unused-sessions', `${entry.sessionId}.json`)
+  f.marker = join(home, 'agy', 'pi-unused-sessions', `${entry.sessionId}.json`)
   const create = runtime.newTrackedSession.bind(runtime)
   runtime.newTrackedSession = (...args) => { if (args[3] !== true) f.coldStarts++; return create(...args) }
   const prompt = proc.prompt.bind(proc)

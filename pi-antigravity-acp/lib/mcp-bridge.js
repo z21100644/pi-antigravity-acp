@@ -1,13 +1,13 @@
 /**
- * Loopback Streamable HTTP MCP server that exposes OMP tool schemas to the
- * official Antigravity agent and parks each `tools/call` until OMP has run the
+ * Loopback Streamable HTTP MCP server that exposes PI Desktop tool schemas to the
+ * official Antigravity agent and parks each `tools/call` until PI Desktop has run the
  * tool through its own permission and execution pipeline.
  *
  * Calls answer with a server-sent-event stream so response headers leave
  * immediately; the agent's HTTP client otherwise abandons a request after 60
  * seconds without headers. Comment frames and MCP progress notifications keep
- * long OMP tool runs (approvals, subagents, builds) visibly alive.
- * @module omp-antigravity-acp/mcp-bridge
+ * long PI Desktop tool runs (approvals, subagents, builds) visibly alive.
+ * @module pi-antigravity-acp/mcp-bridge
  */
 import { createServer } from 'node:http';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
@@ -143,8 +143,8 @@ export class McpBridge {
                 return reply({
                     protocolVersion: version,
                     capabilities: { tools: { listChanged: false } },
-                    serverInfo: { name: 'omp', version: '0.1.0' },
-                    instructions: 'Tools of the Oh My Pi session. Every call is executed by the harness under its own permission policy.',
+                    serverInfo: { name: 'pi', version: '0.3.0' },
+                    instructions: 'Tools of the PI Desktop session. Every call is executed by the harness under its own permission policy.',
                 });
             }
             case 'ping':
@@ -197,7 +197,7 @@ export class McpBridge {
             ticks++;
             res.write(': keepalive\n\n');
             if ((typeof progressToken === 'string' || typeof progressToken === 'number')) {
-                writeEvent(res, { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken, progress: ticks, message: 'Oh My Pi is running the tool' } });
+                writeEvent(res, { jsonrpc: '2.0', method: 'notifications/progress', params: { progressToken, progress: ticks, message: 'PI Desktop is running the tool' } });
             }
         }, this.options.keepAliveMs);
         let result;

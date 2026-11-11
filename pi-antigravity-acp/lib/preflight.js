@@ -4,17 +4,17 @@
  * Antigravity home that ACP sessions use.
  *
  * The isolated home keeps the user's global Antigravity rules, skills, and
- * MCP servers out of OMP sessions and installs the `omp-bridge` agent, which
- * removes every built-in tool so the agent acts only through OMP tools.
- * @module omp-antigravity-acp/preflight
+ * MCP servers out of PI Desktop sessions and installs the `pi-desktop-bridge` agent, which
+ * removes every built-in tool so the agent acts only through PI Desktop tools.
+ * @module pi-antigravity-acp/preflight
  */
 import { chmodSync, copyFileSync, existsSync, mkdirSync, writeFileSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, isAbsolute, join } from 'node:path';
 /** Agent id installed in the isolated home. */
-export const BRIDGE_AGENT = 'omp-bridge';
-/** Minimum official CLI version supporting `agy acp --process-per-session`. */
-export const MIN_AGY_VERSION = [1, 4, 12];
+export const BRIDGE_AGENT = 'pi-desktop-bridge';
+/** Minimum official CLI version offering every account model to every ACP client. */
+export const MIN_AGY_VERSION = [1, 5, 1];
 /** Context window the official binary enforces without the unlock. */
 export const LOCKED_CONTEXT_WINDOW = 256_000;
 /** Physical context window of the Gemini 4, Gemini 3.8, and Claude 5.5 families. */
@@ -119,15 +119,15 @@ export function assertSupportedAgyVersion(version, binary) {
     const supported = major > minMajor
         || (major === minMajor && (minor > minMinor || (minor === minMinor && patch >= minPatch)));
     if (!supported) {
-        throw new Error(`antigravity-acp: Antigravity CLI ${version.trim()} at ${binary} is too old (requires >= 1.5.0); run \`agy update\` to upgrade`);
+        throw new Error(`antigravity-acp: Antigravity CLI ${version.trim()} at ${binary} is too old (requires >= 1.5.1); run \`agy update\` to upgrade`);
     }
 }
 /**
  * Default isolated home.
- * @returns `~/.omp/cache/antigravity-acp`; hosts may override this with their active profile's cache directory.
+ * @returns `~/.pi-desktop/cache/antigravity-acp`; hosts may override this with their active profile's cache directory.
  */
 export function defaultHome() {
-    return join(homedir(), '.omp', 'cache', 'antigravity-acp');
+    return join(homedir(), '.pi-desktop', 'cache', 'antigravity-acp');
 }
 /**
  * Seed or refresh the isolated `antigravity-oauth-token` file from the user's
@@ -188,7 +188,7 @@ export function prepareHome(home, userHome = homedir()) {
     writeIfChanged(join(agentDir, `${BRIDGE_AGENT}.md`), [
         '---',
         `name: ${BRIDGE_AGENT}`,
-        'description: "OMP primary-model bridge: no built-in tools, harness tools only"',
+        'description: "PI Desktop primary-model bridge: no built-in tools, harness tools only"',
         'tools: []',
         'excludeDefaultComponents: true',
         'mainAgent: true',

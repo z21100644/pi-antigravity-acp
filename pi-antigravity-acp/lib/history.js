@@ -1,18 +1,18 @@
 /**
- * Projection of OMP request history into Antigravity ACP prompts.
+ * Projection of PI Desktop request history into Antigravity ACP prompts.
  *
- * ACP sessions own their history, so OMP replays its authoritative history
+ * ACP sessions own their history, so PI Desktop replays its authoritative history
  * once when a session is (re)built and afterwards sends only new input. The
  * replay renders earlier turns as a delimited transcript in front of the
- * newest user input; tool calls keep the agent-visible `mcp_omp_` names.
- * @module omp-antigravity-acp/history
+ * newest user input; tool calls keep the agent-visible `mcp_pi_` names.
+ * @module pi-antigravity-acp/history
  */
-/** Server name under which OMP tools reach the agent; the agent prefixes tool names with `mcp_<server>_`. */
-export const MCP_SERVER_NAME = 'omp';
-/** Agent-visible prefix of every OMP tool. */
+/** Server name under which PI Desktop tools reach the agent; the agent prefixes tool names with `mcp_<server>_`. */
+export const MCP_SERVER_NAME = 'pi';
+/** Agent-visible prefix of every PI Desktop tool. */
 export const AGENT_TOOL_PREFIX = `mcp_${MCP_SERVER_NAME}_`;
-/** Fallback MCP tool name for invoking any OMP tool omitted from direct declarations. */
-export const CALL_TOOL_NAME = 'omp_call_tool';
+/** Fallback MCP tool name for invoking any PI Desktop tool omitted from direct declarations. */
+export const CALL_TOOL_NAME = 'pi_call_tool';
 /**
  * Byte budget for the replayed history transcript while the context gates are
  * unlocked: about 730K tokens, inside the 1M window and the 983K checkpoint
@@ -26,8 +26,8 @@ export const UNLOCKED_REPLAY_BUDGET_BYTES = 2_200_000;
  * a replay prompt.
  */
 export const LOCKED_REPLAY_BUDGET_BYTES = 160_000;
-const HISTORY_OPEN = '<omp_history>\n';
-const HISTORY_CLOSE = '\n</omp_history>\n\n';
+const HISTORY_OPEN = '<pi_history>\n';
+const HISTORY_CLOSE = '\n</pi_history>\n\n';
 /** Upper bound of the omission notice, reserved before history is selected. */
 const OMISSION_NOTICE_RESERVE_BYTES = 128;
 /**
@@ -63,7 +63,7 @@ export function splitSystem(options) {
         index++;
     }
     const messages = options.messages.slice(index);
-    // Older releases declared in-history system replacement to OMP. Adopt its
+    // Older releases declared in-history system replacement to PI Desktop. Adopt its
     // latest complete policy, but never replay superseded policies into a fresh
     // ACP context. The adapter no longer advertises that capability.
     const latestSystem = messages.findLast(message => message.role === 'system');
@@ -112,15 +112,15 @@ export function isRuntimeContextSnapshot(message) {
 }
 /**
  * The bridge instructions appended to the agent's system prompt.
- * @param system - the OMP system prompt.
+ * @param system - the PI Desktop system prompt.
  * @returns the complete appended system text.
  */
 export function bridgeSystemPrompt(system) {
     const preamble = [
-        'You are the primary model of an OMP session. The harness owns the conversation, the tools, and their permissions.',
+        'You are the primary model of a PI Desktop session. The harness owns the conversation, the tools, and their permissions.',
         `Every harness tool is available to you under the prefix \`${AGENT_TOOL_PREFIX}\`: a tool named \`X\` in the instructions below is the tool \`${AGENT_TOOL_PREFIX}X\`. If \`${AGENT_TOOL_PREFIX}X\` is absent from your direct tool declarations, invoke it via \`${AGENT_TOOL_PREFIX}${CALL_TOOL_NAME}\` with \`{"name":"X","arguments":{...}}\`. Use only these tools; pass arguments exactly as their schemas define.`,
-        'Every live MCP call must include toolSummary, a short task description required by agy. This transport field is separate from the OMP tool arguments.',
-        'When the first user message contains a <omp_history> block, it reproduces the earlier part of this conversation; continue from the newest input after it without repeating completed actions.',
+        'Every live MCP call must include toolSummary, a short task description required by agy. This transport field is separate from the PI Desktop tool arguments.',
+        'When the first user message contains a <pi_history> block, it reproduces the earlier part of this conversation; continue from the newest input after it without repeating completed actions.',
     ].join('\n');
     return system.length > 0 ? `${preamble}\n\n${system}` : preamble;
 }
@@ -219,7 +219,7 @@ export async function promptBlocks(content, resolveImage) {
  * The trailing input is always complete. History renders newest-first into the
  * remaining byte budget, so the most recent turns survive and only the oldest
  * messages are omitted; an omitted prefix is announced inside the block. The
- * `<omp_history>` block is always closed before the live input. When the plan
+ * `<pi_history>` block is always closed before the live input. When the plan
  * leaves no trailing input (the history ends with tool results), a short
  * continuation instruction is appended so the prompt is never empty.
  * @param history - messages before the trailing input.
@@ -254,7 +254,7 @@ export async function replayPrompt(history, input, resolveImage, maxHistoryBytes
  * Render the newest messages that fit `budget`, announcing any omitted prefix.
  * @param history - messages before the trailing input.
  * @param budget - byte budget for the transcript body.
- * @returns the complete `<omp_history>` block, or an empty string without history.
+ * @returns the complete `<pi_history>` block, or an empty string without history.
  */
 function historyTranscript(history, budget) {
     const parts = [];

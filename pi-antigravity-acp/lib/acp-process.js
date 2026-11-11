@@ -3,8 +3,8 @@
  * front serves every ACP session from an isolated worker, so the main
  * conversation, each subagent, and auxiliary calls run concurrently on one
  * stdio link. This module owns the link, routes per-session notifications,
- * and refuses every agent-to-client capability OMP does not provide.
- * @module omp-antigravity-acp/acp-process
+ * and refuses every agent-to-client capability PI Desktop does not provide.
+ * @module pi-antigravity-acp/acp-process
  */
 import { JsonRpcPeer, JsonRpcRemoteError } from "./jsonrpc.js";
 /** One running `agy acp` front with its initialized link. */
@@ -187,6 +187,6 @@ export class AcpProcess {
         }
         // File-system, terminal, and elicitation capabilities are not advertised.
         this.options.log?.(`acp: refused agent request ${method}`);
-        throw new JsonRpcRemoteError(method, { code: -32601, message: `${method} is not supported by Oh My Pi` });
+        throw new JsonRpcRemoteError(method, { code: -32601, message: `${method} is not supported by PI Desktop` });
     }
 }

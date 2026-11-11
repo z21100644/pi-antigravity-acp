@@ -8,6 +8,8 @@ import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { ensureBridgeToken, HTTP_BASE_URL } from '../http-bridge.js'
 
+const LEGACY_PLUGIN_ID = 'imported.omp-antigravity-acp'
+
 export async function registerPlugin({ piDesktopDir, pluginDir, userDir = join(homedir(), '.pi-desktop') }) {
   const manifest = JSON.parse(readFileSync(join(pluginDir, 'manifest.json'), 'utf8'))
   const hostExe = join(piDesktopDir, 'resources/bin/pi-desktop-host-core.exe')
@@ -53,8 +55,16 @@ export async function registerPlugin({ piDesktopDir, pluginDir, userDir = join(h
     assert.equal(provider.models.length, manifest.contributes.providers[0].models.length)
     const secret = await rpc('providers.getSecret', { id })
     assert.equal(secret.value, token, 'Local bridge token did not persist')
+    const registryPath = join(userDir, 'plugins/registry.json')
+    const legacyInstalled = manifest.id !== LEGACY_PLUGIN_ID && existsSync(registryPath)
+      && JSON.parse(readFileSync(registryPath, 'utf8')).some(plugin => plugin.id === LEGACY_PLUGIN_ID)
+    if (legacyInstalled) {
+      await rpc('plugins.uninstall', { id: LEGACY_PLUGIN_ID })
+      assert.ok(!JSON.parse(readFileSync(registryPath, 'utf8')).some(plugin => plugin.id === LEGACY_PLUGIN_ID),
+        'Legacy plugin registration was not removed')
+    }
     return { version: loaded.plugin.version, providerId: id, baseUrl: provider.baseUrl,
-      localTokenConfigured: true, models: provider.models.map(model => model.id) }
+      localTokenConfigured: true, models: provider.models.map(model => model.id), retiredLegacy: legacyInstalled }
   } finally {
     for (const task of pending.values()) clearTimeout(task.timer)
     child.stdin.end()

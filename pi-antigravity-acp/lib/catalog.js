@@ -1,10 +1,10 @@
 /**
  * Model catalog derived from the agent's session configuration options. The
  * ACP server advertises model families (`gemini-4-argon`, `claude-opus-5-5`)
- * and a separate `thought_level` option; OMP lists each family once with the
+ * and a separate `thought_level` option; PI Desktop lists each family once with the
  * efforts that family actually offers. Fixed-effort families such as
  * `gpt-oss-120b-medium` carry their effort in the id and expose no selector.
- * @module omp-antigravity-acp/catalog
+ * @module pi-antigravity-acp/catalog
  */
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { EFFORTS } from "./config.js";

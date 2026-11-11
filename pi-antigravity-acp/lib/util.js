@@ -1,7 +1,7 @@
 /**
  * Small async primitives shared by the adapter: deferred values, an
  * unbounded event queue with abortable waits, and a keyed mutex.
- * @module omp-antigravity-acp/util
+ * @module pi-antigravity-acp/util
  */
 import { createHash } from 'node:crypto';
 /**

@@ -24,6 +24,7 @@ function makeRuntime(extra = {}) {
   const home = mkdtempSync(join(tmpdir(), 'agy-acp-test-'))
   const log = join(home, 'prompts.jsonl')
   const mcpLog = join(home, 'mcp.jsonl')
+  const initLog = join(home, 'initialize.jsonl')
   const config = {
     ...DEFAULT_CONFIG, command: fake, home,
     patchScript: join(home, 'missing.py'),
@@ -33,7 +34,7 @@ function makeRuntime(extra = {}) {
   const runtime = new AntigravityRuntime({
     config,
     spawnAcp: (argv, cwd) => {
-      const child = spawn(process.execPath, [argv[0], ...argv.slice(1)], { cwd, env: { ...process.env, FAKE_AGY_LOG: log, FAKE_AGY_MCP: mcpLog, ...extra.env }, stdio: ['pipe', 'pipe', 'pipe'] })
+      const child = spawn(process.execPath, [argv[0], ...argv.slice(1)], { cwd, env: { ...process.env, FAKE_AGY_LOG: log, FAKE_AGY_MCP: mcpLog, FAKE_AGY_INIT: initLog, ...extra.env }, stdio: ['pipe', 'pipe', 'pipe'] })
       let stderr = ''
       child.stderr.on('data', d => { stderr += d })
       return {
@@ -53,12 +54,13 @@ function makeRuntime(extra = {}) {
   runtimes.push(runtime)
   const prompts = () => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
   const mcps = () => existsSync(mcpLog) ? readFileSync(mcpLog, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l)) : []
-  return { home, runtime, prompts, mcps }
+  const initialization = () => JSON.parse(readFileSync(initLog, 'utf8').trim().split('\n')[0])
+  return { home, runtime, prompts, mcps, initialization }
 }
 
 after(async () => { for (const r of runtimes) await r.dispose() })
 
-const sys = { id: 'sys', role: 'system', content: [{ type: 'text', text: 'You are OMP.' }], source: { kind: 'system-prompt' } }
+const sys = { id: 'sys', role: 'system', content: [{ type: 'text', text: 'You are PI Desktop.' }], source: { kind: 'system-prompt' } }
 const user = (id, text) => ({ id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } })
 const assistant = (id, content) => ({ id, role: 'assistant', content, source: { kind: 'model', provider: 'antigravity', model: 'gemini-4-argon' } })
 const tool = (id, callId, text, isError) => ({ id, role: 'tool', toolCallId: callId, content: [{ type: 'text', text }], source: { kind: 'tool', callId }, ...isError ? { isError: true } : {} })
@@ -73,12 +75,13 @@ async function collect(iterable) {
 const finishOf = chunks => chunks.at(-1)
 const textOf = chunks => chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('')
 const callsOf = chunks => chunks.filter(c => c.type === 'block-end' && c.block.type === 'tool-call').map(c => c.block)
-/** Assemble the assistant message OMP would log for one step. */
+/** Assemble the assistant message PI Desktop would log for one step. */
 const assistantFrom = (id, chunks) => assistant(id, chunks.filter(c => c.type === 'block-end').map(c => c.block))
 
 test('single turn streams reasoning, text, exact usage, and the selected model and effort', async () => {
-  const { runtime } = makeRuntime()
+  const { runtime, initialization } = makeRuntime()
   const chunks = await collect(runtime.stream({ provider: 'antigravity', model: 'gemini-3.8-flash', reasoningEffort: 'low', sessionId: 'S1', messages: [sys, user('u1', 'hello')] }))
+  assert.deepEqual(initialization().clientInfo, { name: 'pi-desktop', version: '0.3.0' })
   assert.equal(finishOf(chunks).reason.kind, 'stop')
   assert.ok(chunks.some(c => c.type === 'reasoning-delta' && c.text === 'thinking(low)'))
   assert.match(textOf(chunks), /^echo:gemini-3\.8-flash:low:/)
@@ -86,7 +89,7 @@ test('single turn streams reasoning, text, exact usage, and the selected model a
   assert.deepEqual(usage, { inputTokens: 600, outputTokens: 50, cacheReadTokens: 400, reasoningTokens: 20, totalTokens: 1050 })
 })
 
-test('a tool call parks, ends the step, and resumes the same ACP turn with the OMP result', async () => {
+test('a tool call parks, ends the step, and resumes the same ACP turn with the PI Desktop result', async () => {
   const { runtime, prompts } = makeRuntime()
   const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S2', tools: [bash] }
   const step1 = await collect(runtime.stream({ ...base, messages: [sys, user('u1', 'CALL bash {"command":"ls"}')] }))
@@ -94,7 +97,7 @@ test('a tool call parks, ends the step, and resumes the same ACP turn with the O
   const [call] = callsOf(step1)
   assert.equal(call.name, 'bash')
   assert.deepEqual(JSON.parse(call.arguments), { command: 'ls' })
-  assert.deepEqual(prompts()[0].tools, ['bash', 'omp_await_result', 'omp_call_tool'])
+  assert.deepEqual(prompts()[0].tools, ['bash', 'pi_await_result', 'pi_call_tool'])
   const history = [sys, user('u1', 'CALL bash {"command":"ls"}'), assistantFrom('a1', step1), tool('t1', call.id, 'file-a')]
   const step2 = await collect(runtime.stream({ ...base, messages: history }))
   assert.equal(finishOf(step2).reason.kind, 'stop')
@@ -111,7 +114,7 @@ test('a tool call parks, ends the step, and resumes the same ACP turn with the O
   assert.equal(third.session, prompts()[0].session)
 })
 
-test('parallel tool calls arrive as one OMP step', async () => {
+test('parallel tool calls arrive as one PI Desktop step', async () => {
   const { runtime } = makeRuntime()
   const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S3', tools: [bash, read] }
   const step1 = await collect(runtime.stream({ ...base, messages: [sys, user('u1', 'PCALL bash {"command":"pwd"} ;; read_file {"path":"a.txt"}')] }))
@@ -132,7 +135,7 @@ test('changed history rebuilds the session with a transcript replay', async () =
   await collect(runtime.stream({ ...base, messages: compacted }))
   const replay = prompts()[1]
   assert.notEqual(replay.session, prompts()[0].session)
-  assert.match(replay.text, /<omp_history>[\s\S]*Summary of earlier work[\s\S]*<\/omp_history>/)
+  assert.match(replay.text, /<pi_history>[\s\S]*Summary of earlier work[\s\S]*<\/pi_history>/)
   assert.match(replay.text, /continue please$/)
 })
 
@@ -157,8 +160,8 @@ test('a compaction rewrite while a tool call is parked rebuilds instead of resum
   assert.equal(prompts().length, 2, 'the parked turn must not absorb the compacted history')
   const rebuilt = prompts()[1]
   assert.notEqual(rebuilt.session, prompts()[0].session, 'a new ACP session rebuilds from the compacted history')
-  const historyBlock = /<omp_history>\n([\s\S]*?)\n<\/omp_history>/.exec(rebuilt.text)
-  assert.ok(historyBlock !== null, 'the rebuild sends a <omp_history> block')
+  const historyBlock = /<pi_history>\n([\s\S]*?)\n<\/pi_history>/.exec(rebuilt.text)
+  assert.ok(historyBlock !== null, 'the rebuild sends a <pi_history> block')
   assert.ok(historyBlock[1].includes('Summary of earlier work: listed the workspace.'))
   assert.ok(historyBlock[1].includes('<tool_call id="' + call.id + '"'))
   assert.ok(historyBlock[1].includes('<tool_result id="' + call.id + '">'))
@@ -180,7 +183,7 @@ test('append-only tool results still resume the parked turn in the same ACP sess
   assert.equal(prompts().length, 1, 'append-only history resumes in place without opening a new session')
 })
 
-test('an empty-input rebuild sends a non-empty continuation prompt after <omp_history>', async () => {
+test('an empty-input rebuild sends a non-empty continuation prompt after <pi_history>', async () => {
   const { runtime, prompts } = makeRuntime()
   const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S24' }
   await collect(runtime.stream({ ...base, messages: [sys, user('u1', 'start')] }))
@@ -197,7 +200,7 @@ test('an empty-input rebuild sends a non-empty continuation prompt after <omp_hi
   assert.equal(prompts().length, 2)
   const rebuilt = prompts()[1]
   assert.notEqual(rebuilt.session, prompts()[0].session)
-  const historyBlock = /<omp_history>\n([\s\S]*?)\n<\/omp_history>/.exec(rebuilt.text)
+  const historyBlock = /<pi_history>\n([\s\S]*?)\n<\/pi_history>/.exec(rebuilt.text)
   assert.ok(historyBlock !== null)
   assert.ok(historyBlock[1].includes('Summary: earlier work only.'))
   assert.ok(historyBlock[1].includes('file-a'))
@@ -218,7 +221,7 @@ test('subagent sessions run concurrently while the parent waits on a tool', asyn
   assert.equal(status.activeTurns, 2)
 })
 
-test('a tool that outlives the MCP deadline is relayed through omp_await_result', async () => {
+test('a tool that outlives the MCP deadline is relayed through pi_await_result', async () => {
   const { runtime } = makeRuntime({ host: { relayAfterMs: 150 } })
   const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S5', tools: [bash] }
   const step1 = await collect(runtime.stream({ ...base, messages: [sys, user('u1', 'CALL bash {"command":"long"}')] }))
@@ -250,7 +253,7 @@ test('cancellation aborts the step and the next turn rebuilds', async () => {
   await collect(runtime.stream({ ...base, messages: [sys, user('u1', 'SLEEP 2000'), assistant('a1', [{ type: 'text', text: 'partial' }]), user('u2', 'again')] }))
   const rebuilt = prompts().at(-1)
   assert.notEqual(rebuilt.session, prompts()[0].session)
-  assert.match(rebuilt.text, /<omp_history>[\s\S]*partial[\s\S]*<\/omp_history>[\s\S]*again$/)
+  assert.match(rebuilt.text, /<pi_history>[\s\S]*partial[\s\S]*<\/pi_history>[\s\S]*again$/)
 })
 
 test('an output-length stop continues automatically (long decode)', async () => {
@@ -325,8 +328,8 @@ test('locked replay drops the oldest history, closes the block, and keeps the la
   await collect(runtime.stream({ ...base, messages: [...history, user('u9', latest)] }))
   const replay = prompts().at(-1)
   assert.notEqual(replay.session, prompts()[0].session)
-  assert.match(replay.text, /^<omp_history>\n/)
-  assert.match(replay.text, /\n<\/omp_history>\n\nLATEST /)
+  assert.match(replay.text, /^<pi_history>\n/)
+  assert.match(replay.text, /\n<\/pi_history>\n\nLATEST /)
   assert.ok(replay.text.endsWith(latest))
   assert.ok(!replay.text.includes('OLD-1'))
   assert.ok(!replay.text.includes('OLD-2'))
@@ -372,7 +375,7 @@ test('a hidden fixed-effort family honors a matching medium request without a th
   assert.equal(prompts()[0].level, 'medium')
 })
 
-test('oversized tool schemas compact below agy eager cutoff and omp_call_tool dispatches native calls', async () => {
+test('oversized tool schemas compact below agy eager cutoff and pi_call_tool dispatches native calls', async () => {
   const hugeTool = {
     name: 'bash',
     description: `${'Execute a bash command and return stdout/stderr. '.repeat(25)}Provide description first.`,
@@ -396,23 +399,23 @@ test('oversized tool schemas compact below agy eager cutoff and omp_call_tool di
   const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S17', tools: [bash] }
   const step1 = await collect(runtime.stream({
     ...base,
-    messages: [sys, user('u1', 'CALL omp_call_tool {"name":"mcp_omp_bash","arguments":{"command":"pwd"}}')],
+    messages: [sys, user('u1', 'CALL pi_call_tool {"name":"mcp_pi_bash","arguments":{"command":"pwd"}}')],
   }))
   assert.equal(finishOf(step1).reason.kind, 'tool-calls')
   const [call] = callsOf(step1)
   assert.equal(call.name, 'bash')
   assert.deepEqual(JSON.parse(call.arguments), { command: 'pwd' })
-  const history = [sys, user('u1', 'CALL omp_call_tool {"name":"mcp_omp_bash","arguments":{"command":"pwd"}}'), assistantFrom('a1', step1), tool('t1', call.id, '/workspace')]
+  const history = [sys, user('u1', 'CALL pi_call_tool {"name":"mcp_pi_bash","arguments":{"command":"pwd"}}'), assistantFrom('a1', step1), tool('t1', call.id, '/workspace')]
   const step2 = await collect(runtime.stream({ ...base, messages: history }))
-  assert.equal(textOf(step2), 'RESULT(omp_call_tool)=/workspace')
+  assert.equal(textOf(step2), 'RESULT(pi_call_tool)=/workspace')
 })
 
 test('permission gate rejects spoofed native tools and grants genuinely reported bridge calls', async () => {
   const { runtime } = makeRuntime()
   const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S25', tools: [bash, read] }
 
-  // ① A native tool whose rawInput merely embeds "mcp_omp_bash" must be rejected.
-  // ② A title faking "mcp_omp_read" without structured metadata must be rejected.
+  // ① A native tool whose rawInput merely embeds "mcp_pi_bash" must be rejected.
+  // ② A title faking "mcp_pi_read" without structured metadata must be rejected.
   const hostile = await collect(runtime.stream({ ...base, messages: [sys, user('u1', 'DENYCALL bash {"command":"ls"}\nSPOOFCALL read_file {"path":"a"}')] }))
   assert.equal(finishOf(hostile).reason.kind, 'stop')
   assert.match(textOf(hostile), /RESULT\(bash\)=PERMISSION_REJECTED/)
@@ -434,8 +437,8 @@ test('permission gate rejects spoofed native tools and grants genuinely reported
   assert.equal(finishOf(resumed).reason.kind, 'stop')
   assert.equal(textOf(resumed), 'RESULT(bash)=/workspace')
 
-  // omp_call_tool is allowed by the gate and dispatches to the target OMP tool.
-  const dispatch = await collect(runtime.stream({ ...base, messages: [sys, user('u2', 'CALL omp_call_tool {"name":"mcp_omp_read_file","arguments":{"path":"README.md"}}')] }))
+  // pi_call_tool is allowed by the gate and dispatches to the target PI Desktop tool.
+  const dispatch = await collect(runtime.stream({ ...base, messages: [sys, user('u2', 'CALL pi_call_tool {"name":"mcp_pi_read_file","arguments":{"path":"README.md"}}')] }))
   assert.equal(finishOf(dispatch).reason.kind, 'tool-calls')
   const [dispatched] = callsOf(dispatch)
   assert.equal(dispatched.name, 'read_file')
@@ -542,7 +545,9 @@ test('the MCP bridge enforces per-tenant bearer secrets and drops the conversati
   const own = await post(second.url, second.authorization, { jsonrpc: '2.0', id: 4, method: 'tools/list', params: {} })
   assert.equal(own.status, 200)
   const ownBody = await own.json()
-  assert.ok(ownBody.result.tools.some(t => t.name === 'omp_call_tool'))
+  assert.ok(ownBody.result.tools.some(t => t.name === 'pi_call_tool'))
+  const initialized = await post(second.url, second.authorization, { jsonrpc: '2.0', id: 5, method: 'initialize', params: {} })
+  assert.deepEqual((await initialized.json()).result.serverInfo, { name: 'pi', version: '0.3.0' })
 })
 
 test('a session reset revokes its tenant secret immediately', async () => {
@@ -636,22 +641,22 @@ function writeModelStep(dbPath, idx, stats, status = 3) {
   }
 }
 
-test('dynamic tool additions, removals, and same-turn unlocks keep the ACP session alive and dispatch via omp_call_tool', async () => {
+test('dynamic tool additions, removals, and same-turn unlocks keep the ACP session alive and dispatch via pi_call_tool', async () => {
   const { runtime, prompts } = makeRuntime()
   const session = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S18' }
   const toolList = { name: 'tool_list', description: 'Open a tool group', parameters: { type: 'object', properties: { group: { type: 'string' } }, required: ['group'] } }
   const preview = { name: 'preview_page', description: 'Preview a page URL', parameters: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] } }
 
-  // Scenario A: same-turn unlock during deliverResults immediately allows omp_call_tool without session rebuild.
+  // Scenario A: same-turn unlock during deliverResults immediately allows pi_call_tool without session rebuild.
   const turn1Prompt = [
     'CALL tool_list {"group":"ui"}',
-    'CALL omp_call_tool {"name":"preview_page","arguments":{"url":"http://127.0.0.1:3000"}}',
+    'CALL pi_call_tool {"name":"preview_page","arguments":{"url":"http://127.0.0.1:3000"}}',
   ].join('\n')
   const s1 = await collect(runtime.stream({ ...session, tools: [toolList], messages: [sys, user('u1', turn1Prompt)] }))
   assert.equal(finishOf(s1).reason.kind, 'tool-calls')
   const [c1] = callsOf(s1)
   assert.equal(c1.name, 'tool_list')
-  assert.deepEqual(prompts()[0].tools, ['tool_list', 'omp_await_result', 'omp_call_tool'])
+  assert.deepEqual(prompts()[0].tools, ['tool_list', 'pi_await_result', 'pi_call_tool'])
 
   let hist = [sys, user('u1', turn1Prompt), assistantFrom('a1', s1), tool('t1', c1.id, 'opened ui')]
   const s2 = await collect(runtime.stream({ ...session, tools: [toolList, preview], messages: hist }))
@@ -664,30 +669,30 @@ test('dynamic tool additions, removals, and same-turn unlocks keep the ACP sessi
   const s3 = await collect(runtime.stream({ ...session, tools: [toolList, preview], messages: hist }))
   assert.equal(finishOf(s3).reason.kind, 'stop')
   assert.equal(prompts().length, 1, 'same-turn unlock resumed the live ACP turn without sending a second prompt')
-  assert.match(textOf(s3), /<harness_tool_update>[\s\S]*tool available via mcp_omp_omp_call_tool with \{"name":"preview_page"/)
-  assert.match(textOf(s3), /RESULT\(omp_call_tool\)=preview-ready/)
+  assert.match(textOf(s3), /<harness_tool_update>[\s\S]*tool available via mcp_pi_pi_call_tool with \{"name":"preview_page"/)
+  assert.match(textOf(s3), /RESULT\(pi_call_tool\)=preview-ready/)
 
-  // Scenario B: cross-turn tool addition sends <harness_tool_update>, keeps the same ACP session, and has no <omp_history>.
-  hist = [...hist, assistantFrom('a3', s3), user('u2', 'CALL omp_call_tool {"name":"read_file","arguments":{"path":"README.md"}}')]
+  // Scenario B: cross-turn tool addition sends <harness_tool_update>, keeps the same ACP session, and has no <pi_history>.
+  hist = [...hist, assistantFrom('a3', s3), user('u2', 'CALL pi_call_tool {"name":"read_file","arguments":{"path":"README.md"}}')]
   const s4 = await collect(runtime.stream({ ...session, tools: [toolList, preview, read], messages: hist }))
   assert.equal(finishOf(s4).reason.kind, 'tool-calls')
   assert.equal(prompts()[1].session, prompts()[0].session)
-  assert.doesNotMatch(prompts()[1].text, /<omp_history>/)
-  assert.match(prompts()[1].text, /^<harness_tool_update>\n\[tool available via mcp_omp_omp_call_tool with \{"name":"read_file"/)
-  assert.deepEqual(prompts()[1].tools, ['tool_list', 'omp_await_result', 'omp_call_tool'], 'advertised MCP tool prefix stays frozen')
+  assert.doesNotMatch(prompts()[1].text, /<pi_history>/)
+  assert.match(prompts()[1].text, /^<harness_tool_update>\n\[tool available via mcp_pi_pi_call_tool with \{"name":"read_file"/)
+  assert.deepEqual(prompts()[1].tools, ['tool_list', 'pi_await_result', 'pi_call_tool'], 'advertised MCP tool prefix stays frozen')
   const [c3] = callsOf(s4)
   assert.equal(c3.name, 'read_file')
   hist = [...hist, assistantFrom('a4', s4), tool('t3', c3.id, 'readme-body')]
   const s5 = await collect(runtime.stream({ ...session, tools: [toolList, preview, read], messages: hist }))
   assert.equal(finishOf(s5).reason.kind, 'stop')
-  assert.equal(textOf(s5), 'RESULT(omp_call_tool)=readme-body')
+  assert.equal(textOf(s5), 'RESULT(pi_call_tool)=readme-body')
 
-  // Scenario C: removing tools notifies <harness_tool_update> and rejects omp_call_tool without rebuilding the session.
-  hist = [...hist, assistantFrom('a5', s5), user('u3', 'CALL omp_call_tool {"name":"read_file","arguments":{"path":"README.md"}}')]
+  // Scenario C: removing tools notifies <harness_tool_update> and rejects pi_call_tool without rebuilding the session.
+  hist = [...hist, assistantFrom('a5', s5), user('u3', 'CALL pi_call_tool {"name":"read_file","arguments":{"path":"README.md"}}')]
   const s6 = await collect(runtime.stream({ ...session, tools: [], messages: hist }))
   assert.equal(finishOf(s6).reason.kind, 'stop')
   assert.equal(prompts()[2].session, prompts()[0].session)
-  assert.doesNotMatch(prompts()[2].text, /<omp_history>/)
+  assert.doesNotMatch(prompts()[2].text, /<pi_history>/)
   assert.match(prompts()[2].text, /\[tool disabled: read_file\]/)
   assert.match(prompts()[2].text, /\[tool disabled: tool_list\]/)
   assert.match(textOf(s6), /The harness has no tool named read_file/)
@@ -697,7 +702,7 @@ test('dynamic tool additions, removals, and same-turn unlocks keep the ACP sessi
   const s7 = await collect(runtime.stream({ ...session, tools: [toolList], messages: hist }))
   assert.equal(finishOf(s7).reason.kind, 'tool-calls')
   assert.equal(prompts()[3].session, prompts()[0].session)
-  assert.match(prompts()[3].text, /\[tool restored: mcp_omp_tool_list\]/)
+  assert.match(prompts()[3].text, /\[tool restored: mcp_pi_tool_list\]/)
   const [c4] = callsOf(s7)
   hist = [...hist, assistantFrom('a7', s7), tool('t4', c4.id, 'restored-ok')]
   const s8 = await collect(runtime.stream({ ...session, tools: [toolList], messages: hist }))
@@ -706,14 +711,14 @@ test('dynamic tool additions, removals, and same-turn unlocks keep the ACP sessi
   // Scenario E: a main session opened with no initial tools still mounts the MCP bridge for later dynamic tools.
   const emptyInit = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'S18-empty' }
   const e1 = await collect(runtime.stream({ ...emptyInit, tools: [], messages: [sys, user('eu1', 'hello')] }))
-  assert.deepEqual(prompts().at(-1).tools, ['omp_await_result', 'omp_call_tool'])
-  const eHist = [sys, user('eu1', 'hello'), assistantFrom('ea1', e1), user('eu2', 'CALL omp_call_tool {"name":"bash","arguments":{"command":"echo hi"}}')]
+  assert.deepEqual(prompts().at(-1).tools, ['pi_await_result', 'pi_call_tool'])
+  const eHist = [sys, user('eu1', 'hello'), assistantFrom('ea1', e1), user('eu2', 'CALL pi_call_tool {"name":"bash","arguments":{"command":"echo hi"}}')]
   const e2 = await collect(runtime.stream({ ...emptyInit, tools: [bash], messages: eHist }))
   assert.equal(finishOf(e2).reason.kind, 'tool-calls')
   assert.equal(prompts().at(-1).session, prompts().at(-2).session)
   const [ec] = callsOf(e2)
   const e3 = await collect(runtime.stream({ ...emptyInit, tools: [bash], messages: [...eHist, assistantFrom('ea2', e2), tool('et1', ec.id, 'hi')] }))
-  assert.equal(textOf(e3), 'RESULT(omp_call_tool)=hi')
+  assert.equal(textOf(e3), 'RESULT(pi_call_tool)=hi')
 })
 
 test('config.relayAfterMs overrides the long-tool relay threshold', async () => {
@@ -935,13 +940,15 @@ test('Windows preflight locates agy.exe in LOCALAPPDATA and PATH while skipping 
   assert.equal(calls[0][0], realPy)
 
   assert.throws(() => assertSupportedAgyVersion('1.2.7', defaultWinExe), /1\.2\.7.*agy update/)
+  assert.throws(() => assertSupportedAgyVersion('1.5.0', defaultWinExe), /requires >= 1\.5\.1/)
+  assert.doesNotThrow(() => assertSupportedAgyVersion('1.5.1', defaultWinExe))
   assert.doesNotThrow(() => assertSupportedAgyVersion('1.5.2', defaultWinExe))
   assert.doesNotThrow(() => assertSupportedAgyVersion('Antigravity CLI 1.5.2', defaultWinExe))
   assert.doesNotThrow(() => assertSupportedAgyVersion('fake-agy 0.0.1', defaultWinExe))
 
   // File-backed OAuth token sync seeds isolated home and updates only when source is newer.
   const cliAuthDir = join(root, '.gemini', 'antigravity-cli')
-  const isolatedHome = join(root, '.omp', 'cache', 'antigravity-acp')
+  const isolatedHome = join(root, '.pi-desktop', 'cache', 'antigravity-acp')
   mkdirSync(cliAuthDir, { recursive: true })
   const srcToken = join(cliAuthDir, 'antigravity-oauth-token')
   const dstToken = join(isolatedHome, 'agy', 'antigravity-oauth-token')
@@ -991,9 +998,9 @@ test('multi-turn tool calls mint distinct session-wide ToolCallIds so PTC subCal
   assert.equal(seenPtcSubCallIds.size, 3)
 })
 
-test('OMP toolResult messages resume parked tools; in-place history pruning rebuilds instead of keeping stale context', async () => {
+test('PI Desktop toolResult messages resume parked tools; in-place history pruning rebuilds instead of keeping stale context', async () => {
   const { runtime, prompts } = makeRuntime()
-  const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'omp-history', tools: [bash] }
+  const base = { provider: 'antigravity', model: 'gemini-4-argon', sessionId: 'pi-history', tools: [bash] }
   const history = [{ role: 'user', content: 'CALL bash {"command":"pwd"}', timestamp: 100 }]
   const first = await collect(runtime.stream({ ...base, messages: toMessages(history) }))
   const [call] = callsOf(first)
@@ -1006,7 +1013,7 @@ test('OMP toolResult messages resume parked tools; in-place history pruning rebu
     content: [{ type: 'text', text: '/project/roundtrip' }], timestamp: 102 })
   const second = await collect(runtime.stream({ ...base, messages: toMessages(history) }))
   assert.equal(textOf(second), 'RESULT(bash)=/project/roundtrip')
-  assert.equal(prompts().length, 1, 'OMP tool results must resume the original ACP prompt')
+  assert.equal(prompts().length, 1, 'PI Desktop tool results must resume the original ACP prompt')
 
   history.push({ role: 'assistant', provider: 'antigravity', model: base.model, timestamp: 103,
     content: [{ type: 'text', text: textOf(second) }] })

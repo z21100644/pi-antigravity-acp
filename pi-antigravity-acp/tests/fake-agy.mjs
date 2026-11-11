@@ -8,8 +8,8 @@
 //   CALL_AND_FAIL <tool> <json> fail the native prompt before the tool returns
 //   SLEEP <ms>              wait before ending the turn
 //   MAXTOK                  end the first segment with max_tokens
-//   DENYCALL <tool> <json>  native tool whose rawInput merely embeds "mcp_omp_<tool>"
-//   SPOOFCALL <tool> <json> title fakes "mcp_omp_<tool>" but no structured metadata
+//   DENYCALL <tool> <json>  native tool whose rawInput merely embeds "mcp_pi_<tool>"
+//   SPOOFCALL <tool> <json> title fakes "mcp_pi_<tool>" but no structured metadata
 //   STALECALL <tool> <json> permission claims structured metadata never reported
 //   CONFLICTCALL <a> <json> ;; <b>  reported tool a but permission claims b
 //   CROSSCALL <session> <tool> <json>  permission request names another session
@@ -40,7 +40,7 @@ const MODELS = [
   { value: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5' },
   { value: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
 ]
-// One entry per effort variant, exactly like a live JetBrains ACP session.
+// One entry per effort variant, exactly like a live ACP session.
 const efforts = (process.env.FAKE_AGY_EFFORTS ?? 'low,medium,high').split(',');
 const availableModels = () => [
   ...['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'claude-sonnet-5-5'].flatMap(id =>
@@ -102,11 +102,11 @@ async function runToolCall(s, name, args, opts = {}) {
   s.lastToolCallId = toolCallId
   const toolCall = {
     toolCallId,
-    title: opts.title ?? `mcp_omp_${name}`,
+    title: opts.title ?? `mcp_pi_${name}`,
     kind: opts.kind ?? 'other',
     rawInput: opts.rawInput ?? args,
   }
-  const reportStructured = opts.structured === undefined ? { server: 'omp', tool: name } : opts.structured
+  const reportStructured = opts.structured === undefined ? { server: 'pi', tool: name } : opts.structured
   if (!opts.noReport) {
     update(s.id, {
       sessionUpdate: 'tool_call',
@@ -120,7 +120,7 @@ async function runToolCall(s, name, args, opts = {}) {
   // Incremental updates sent after the identity report, before the permission ask.
   if (opts.statusOnlyUpdate) update(s.id, { sessionUpdate: 'tool_call_update', toolCallId, status: 'pending' })
   if (opts.conflictUpdateWith !== undefined) {
-    update(s.id, { sessionUpdate: 'tool_call_update', toolCallId, status: 'pending', mcpServerName: 'omp', mcpToolName: opts.conflictUpdateWith })
+    update(s.id, { sessionUpdate: 'tool_call_update', toolCallId, status: 'pending', mcpServerName: 'pi', mcpToolName: opts.conflictUpdateWith })
   }
   if (!opts.noPermission) {
     const outcome = await askPermission(s, {
@@ -138,10 +138,10 @@ async function runToolCall(s, name, args, opts = {}) {
   let text = res.result.content.map(c => c.text ?? `[${c.type}]`).join('')
   // Follow still-running notices the way the instructed agent does.
   for (let hop = 0; hop < 20; hop++) {
-    const match = /omp_await_result with \{"call_id":"([^"]+)"\}/.exec(text)
+    const match = /pi_await_result with \{"call_id":"([^"]+)"\}/.exec(text)
     if (match === null) break
     s.relays = (s.relays ?? 0) + 1
-    const next = await runToolCall(s, 'omp_await_result', { call_id: match[1] })
+    const next = await runToolCall(s, 'pi_await_result', { call_id: match[1] })
     text = next
   }
   return text
@@ -182,7 +182,7 @@ async function runPrompt(s, text) {
       output.push(`RESULT(${name})=${result}`)
     } else if (line.startsWith('DENYCALL ')) {
       const [, name, ...rest] = line.split(' ')
-      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { structured: null, title: name, rawInput: { cmd: `mcp_omp_${name}` } })
+      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { structured: null, title: name, rawInput: { cmd: `mcp_pi_${name}` } })
       output.push(`RESULT(${name})=${result}`)
     } else if (line.startsWith('SPOOFCALL ')) {
       const [, name, ...rest] = line.split(' ')
@@ -190,12 +190,12 @@ async function runPrompt(s, text) {
       output.push(`RESULT(${name})=${result}`)
     } else if (line.startsWith('STALECALL ')) {
       const [, name, ...rest] = line.split(' ')
-      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { noReport: true, claim: { server: 'omp', tool: name } })
+      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { noReport: true, claim: { server: 'pi', tool: name } })
       output.push(`RESULT(${name})=${result}`)
     } else if (line.startsWith('CONFLICTCALL ')) {
       const [head, other] = line.slice(13).split(' ;; ')
       const [name, ...rest] = head.trim().split(' ')
-      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { claim: { server: 'omp', tool: other.trim() } })
+      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { claim: { server: 'pi', tool: other.trim() } })
       output.push(`RESULT(${name})=${result}`)
     } else if (line.startsWith('CROSSCALL ')) {
       const [, target, name, ...rest] = line.split(' ')
@@ -222,13 +222,13 @@ async function runPrompt(s, text) {
       const args = JSON.parse(rest.join(' '))
       const result = await runToolCall(s, name, args, { conflictUpdateWith: conflicting })
       // A follow-up ask that claims the conflicting identity must be refused too.
-      const outcome = await askPermission(s, { toolCallId: s.lastToolCallId, title: `mcp_omp_${conflicting}`, kind: 'other', rawInput: args, mcpServerName: 'omp', mcpToolName: conflicting })
+      const outcome = await askPermission(s, { toolCallId: s.lastToolCallId, title: `mcp_pi_${conflicting}`, kind: 'other', rawInput: args, mcpServerName: 'pi', mcpToolName: conflicting })
       const selected = outcome?.outcome === 'selected' ? String(outcome.optionId) : 'cancelled'
       const second = selected.startsWith('allow') ? `CONFLICT_CLAIM_${conflicting}_ALLOWED:${selected}` : `CONFLICT_CLAIM_${conflicting}_DENIED`
       output.push(`RESULT(${name})=${result} ${second}`)
     } else if (line.startsWith('REPLAYCALL ')) {
       const [, name, ...rest] = line.split(' ')
-      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { noReport: true, reuseId: s.lastToolCallId, claim: { server: 'omp', tool: name } })
+      const result = await runToolCall(s, name, JSON.parse(rest.join(' ')), { noReport: true, reuseId: s.lastToolCallId, claim: { server: 'pi', tool: name } })
       output.push(`RESULT(${name})=${result}`)
     } else if (line.startsWith('CALL_ALWAYSONLY ')) {
       const [, name, ...rest] = line.split(' ')
@@ -295,7 +295,7 @@ rl.on('line', async (line) => {
     }
     if (method === 'session/prompt') {
       const rawText = params.prompt.filter(b => b.type === 'text').map(b => b.text).join('')
-      const text = process.env.FAKE_AGY_SKIP_HISTORY ? rawText.replace(/<omp_history>[\s\S]*?<\/omp_history>/g, '') : rawText
+      const text = process.env.FAKE_AGY_SKIP_HISTORY ? rawText.replace(/<pi_history>[\s\S]*?<\/pi_history>/g, '') : rawText
       if (log) appendFileSync(log, `${JSON.stringify({ session: s.id, text, rawText, images: params.prompt.filter(b => b.type === 'image').length, tools: s.tools, model: s.model, level: s.level, system: s.system.slice(0, 80) })}\n`)
       s.cancelled = false
       const result = await runPrompt(s, text)

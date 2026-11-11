@@ -2,7 +2,7 @@
  * Read generation bills and completed model-step usage written by `agy` into
  * `$home/agy/conversations/<sessionId>.db` (`gen_metadata.data` field `1.4`,
  * or `steps.metadata` field `9` for `step_type = 15`, `status = 3`).
- * @module omp-antigravity-acp/usage-db
+ * @module pi-antigravity-acp/usage-db
  */
 import { existsSync, unlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';

@@ -16,7 +16,7 @@ export const HTTP_BASE_URL = `http://127.0.0.1:${HTTP_PORT}/v1`
 export const BRIDGE_PROVIDER = 'pi-desktop-antigravity-acp'
 
 export function ensureBridgeToken(userDir = join(homedir(), '.pi-desktop')) {
-  const folder = join(userDir, 'plugins/data/imported.omp-antigravity-acp')
+  const folder = join(userDir, 'plugins/data/pi-antigravity-acp')
   mkdirSync(folder, { recursive: true })
   const file = join(folder, 'bridge-token')
   try { writeFileSync(file, randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 }) }

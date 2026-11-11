@@ -2,7 +2,7 @@
  * Plan quota read through the official CLI's local `/usage` command, which
  * reports each model group's weekly and five-hour windows without sending a
  * model request.
- * @module omp-antigravity-acp/quota
+ * @module pi-antigravity-acp/quota
  */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';

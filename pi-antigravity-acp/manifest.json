@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "id": "imported.omp-antigravity-acp",
+  "id": "pi-antigravity-acp",
   "name": "Antigravity ACP for PI Desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Antigravity models through local agy ACP; PI Desktop owns tools and permissions.",
   "main": "main.cjs",
   "permissions": [

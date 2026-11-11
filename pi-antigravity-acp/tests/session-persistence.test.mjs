@@ -75,6 +75,20 @@ test('an idle session resumes after capacity eviction', async t => {
     assert.equal(first.runtime.liveSessionSlots.size, 1);
 });
 
+test('a saved session from another tool namespace rebuilds before loading native history', async t => {
+    const first = await firstTurn(t);
+    await first.runtime.dispose();
+    const path = join(first.home, 'session-index.json');
+    const index = JSON.parse(readFileSync(path, 'utf8'));
+    delete index.entries['persistent|main'].mcpServer;
+    writeFileSync(path, JSON.stringify(index));
+    const second = makeRuntime(t, { home: first.home });
+    await collect(second.runtime.stream({ ...base, messages: [...first.history, user('u2', 'after namespace upgrade')] }));
+    assert.notEqual(second.prompts()[0].session, first.sessionId);
+    assert.ok(!second.events().some(event => event.method === 'session/load'));
+    assert.equal(second.index()['persistent|main'].mcpServer, 'pi');
+});
+
 for (const mode of ['rewritten content with the same id', 'compacted history', 'changed system']) {
     test(`restoration rejects ${mode}`, async t => {
         const first = await firstTurn(t);
@@ -98,7 +112,7 @@ for (const mode of ['unsupported', 'load failure']) {
             env: mode === 'unsupported' ? { FAKE_AGY_LOAD: '0' } : { FAKE_AGY_LOAD_FAIL: '1' }, config: { maxLiveSessions: 1 } });
         await collect(second.runtime.stream({ ...base, messages: [...first.history, user('u2', 'next')] }));
         assert.notEqual(second.prompts()[0].session, first.sessionId);
-        assert.match(second.prompts()[0].text, /<omp_history>/);
+        assert.match(second.prompts()[0].text, /<pi_history>/);
         assert.equal(second.runtime.liveSessionSlots.size, 1);
         if (mode === 'load failure') assert.ok(second.warnings.some(message => message.includes('session/load failed')));
     });
