@@ -41,15 +41,16 @@ const MODELS = [
   { value: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
 ]
 // One entry per effort variant, exactly like a live JetBrains ACP session.
+const efforts = (process.env.FAKE_AGY_EFFORTS ?? 'low,medium,high').split(',');
 const availableModels = () => [
   ...['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5', 'claude-sonnet-5-5'].flatMap(id =>
-    ['low', 'medium', 'high'].map(level => ({ modelId: `${id}-${level}`, name: `${id} (${level})` }))),
+    efforts.map(level => ({ modelId: `${id}-${level}`, name: `${id} (${level})` }))),
   { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' },
 ]
 const configOptions = (s) => [
   { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: s.model, options: MODELS },
-  { id: 'thought_level', name: 'Thinking Level', category: 'thought_level', type: 'select', currentValue: s.level, options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }] },
-]
+  { id: 'thought_level', name: 'Thinking Level', category: 'thought_level', type: 'select', currentValue: s.level, options: efforts.map(value => ({ value, name: value })) },
+].filter(option => option.id !== 'thought_level' || (!s.model.startsWith('gpt-oss') && !process.env.FAKE_AGY_NO_THOUGHT_LEVEL))
 const update = (sessionId, u) => send({ jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: u } })
 
 async function mcp(server, body) {
@@ -133,6 +134,7 @@ async function runToolCall(s, name, args, opts = {}) {
     }
   }
   const res = await mcp(s.mcp, { jsonrpc: '2.0', id: ++rpcId, method: 'tools/call', params: { name, arguments: args, _meta: { progressToken: `p${rpcId}`, 'antigravity.google/conversation_id': s.id } } })
+  if (eventLog) appendFileSync(eventLog, `${JSON.stringify({ method: 'tool_result_received', sessionId: s.id, level: s.level, model: s.model, at: Date.now() })}\n`)
   let text = res.result.content.map(c => c.text ?? `[${c.type}]`).join('')
   // Follow still-running notices the way the instructed agent does.
   for (let hop = 0; hop < 20; hop++) {
@@ -288,7 +290,8 @@ rl.on('line', async (line) => {
         }
         s.level = params.value
       }
-      return send({ jsonrpc: '2.0', id, result: { configOptions: configOptions(s) } })
+      return send({ jsonrpc: '2.0', id, result: process.env.FAKE_AGY_CONFIG_NO_ACK ? {}
+        : { configOptions: process.env.FAKE_AGY_CONFIG_EMPTY_ACK ? [] : configOptions(s) } })
     }
     if (method === 'session/prompt') {
       const rawText = params.prompt.filter(b => b.type === 'text').map(b => b.text).join('')

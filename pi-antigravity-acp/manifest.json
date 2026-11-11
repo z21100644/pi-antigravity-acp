@@ -27,10 +27,10 @@
         "apiStyle": "chat_completions",
         "description": "Local authenticated HTTP bridge to the official agy ACP transport.",
         "models": [
-          { "id": "gemini-4-carbon", "name": "Gemini 4 Carbon", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" },
-          { "id": "gemini-4-argon", "name": "Gemini 4 Argon", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" },
-          { "id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" },
-          { "id": "claude-opus-5-5", "name": "Claude Opus 5.5", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" }
+          { "id": "gemini-4-carbon", "name": "Gemini 4 Carbon", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["low", "medium", "high"], "defaultThinkingLevel": "medium" },
+          { "id": "gemini-4-argon", "name": "Gemini 4 Argon", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["low", "medium", "high"], "defaultThinkingLevel": "medium" },
+          { "id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["low", "medium", "high"], "defaultThinkingLevel": "medium" },
+          { "id": "claude-opus-5-5", "name": "Claude Opus 5.5", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["low", "medium", "high"], "defaultThinkingLevel": "medium" }
         ]
       }
     ]

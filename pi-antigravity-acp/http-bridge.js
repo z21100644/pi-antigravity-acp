@@ -8,6 +8,8 @@ import { loadConfig } from './lib/settings.js'
 import { spawnAcp, runCommand } from './lib/host.js'
 import { toMessages } from './lib/messages.js'
 import { UsageMonitor } from './lib/usage-monitor.js'
+import { asEffort } from './lib/config.js'
+import { LlmError } from './lib/protocol.js'
 
 export const HTTP_PORT = 32187
 export const HTTP_BASE_URL = `http://127.0.0.1:${HTTP_PORT}/v1`
@@ -60,9 +62,10 @@ export function toAcpRequest(body, headers = {}, signal, fallbackEffort = 'mediu
     else throw new Error(`Unsupported message role: ${message.role}`)
   }
   const textOnly = body.tools === undefined || body.tool_choice === 'none'
-  const requested = headers['x-pi-acp-reasoning'] ?? body.reasoning_effort
-  const reasoningEffort = ['off', 'none', 'minimal', 'low'].includes(requested) ? 'low'
-    : ['high', 'xhigh', 'max'].includes(requested) ? 'high' : requested === 'medium' ? 'medium' : fallbackEffort
+  const requested = headers['x-pi-acp-reasoning'] ?? body.reasoning_effort ?? fallbackEffort
+  const reasoningEffort = asEffort(requested)
+  if (reasoningEffort === undefined)
+    throw new LlmError(`Unsupported reasoning effort ${JSON.stringify(requested)}; choose low, medium, or high`, 'INVALID_REQUEST')
   return {
     provider: BRIDGE_PROVIDER, model: body.model, system: system.join('\n\n'),
     messages: toMessages(messages), reasoningEffort, purpose: textOnly ? 'text-only' : 'main',
@@ -203,7 +206,8 @@ export async function startHttpBridge({ userDir = join(homedir(), '.pi-desktop')
         log('error', `Local ACP request failed: ${String(error?.message ?? error)}`)
         const detail = { message: String(error?.message ?? error), type: 'acp_error', code: error.code ?? 'ACP_ERROR' }
         if (res.headersSent) { sse({ error: detail }); res.end('data: [DONE]\n\n') }
-        else json(error.code === 'RATE_LIMIT' ? 429 : error.code === 'AUTH' ? 401 : 502, { error: detail })
+        else json(error.code === 'INVALID_REQUEST' ? 400 : error.code === 'EFFORT_UNAVAILABLE' ? 422
+          : error.code === 'RATE_LIMIT' ? 429 : error.code === 'AUTH' ? 401 : 502, { error: detail })
       }
     } finally {
       monitor.end(monitoredId, controller.signal.aborted ? 'aborted' : undefined)

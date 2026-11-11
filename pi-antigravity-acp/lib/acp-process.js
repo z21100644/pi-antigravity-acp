@@ -110,7 +110,9 @@ export class AcpProcess {
      */
     async setConfigOption(sessionId, configId, value) {
         const result = await this.link().request('session/set_config_option', { sessionId, configId, value }, { timeoutMs: 60_000 });
-        return result?.configOptions ?? [];
+        if (!Array.isArray(result?.configOptions))
+            throw new Error('Invalid session/set_config_option acknowledgement: missing configOptions');
+        return result.configOptions;
     }
     /**
      * Send one prompt; resolves when the agent ends the turn.

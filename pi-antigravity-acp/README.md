@@ -48,7 +48,11 @@ Windows 后台启动的 ACP 主进程、额度查询和安装登记均设置 `wi
 
 - 已完成的主对话保存在 ACP 数据目录的 `session-index.json`，通过临时文件和 rename 更新。PI Desktop 重启或空闲会话被淘汰后，插件会检查 system 和历史内容指纹，使用 `session/load` 恢复原 ACP session，并重新绑定 MCP 端点。历史被改写、压缩或加载失败时，从 PI 的历史重建；每次新 prompt 提交前撤销索引，避免恢复未完成的原生上下文。
 - 用量优先读取 `gen_metadata.data` 的生成记录，在轮末用已完成的 model steps 补齐缺口。两表按用量记录及出现次数对账，处理晚到记录和重复读取；旧版数据库保留 steps 路径。数据库样本保留原始 token 总量，无法读取数据库时沿用 ACP 轮末归一化用量。
-- 模型与推理等级依次设置，并检查返回值，未生效时重试一次。`coldSwitchSettleMs` 接受 `0..2000` 的整数，默认 `80`；仅在新建或恢复的 session 确实切换设置后等待，取消请求会中断等待。
+- 模型与推理等级依次设置，并检查返回值，未生效时重试一次。每次 prompt、热池取用、工具结果续跑与长回复 continuation 都会向 ACP 重新确认 PI 指定的 `thought_level`，不只相信本机缓存。`coldSwitchSettleMs` 接受 `0..2000` 的整数，默认 `80`；仅在新建或恢复的 session 确实切换设置后等待，取消请求会中断等待。
+
+推理等级严格遵循 PI 的 `low / medium / high` 选择。模型不支持所选等级、缺少 selector 或 ACP 没有回传确认值时，请求明确失败，不自动换成较低等级。固定 `medium` 的模型只接受 `medium` 请求。此前把 `off/minimal` 映射为 `low`、把 `xhigh/max` 映射为 `high` 的行为已移除；旧对话若保存了这些值，请在 PI 中改选实际支持的等级。
+
+工具等待期间收到的降档通知会在交还结果前修正；生成期间若 ACP 报告不同模型或推理等级，会中止该轮并撤销恢复索引，避免继续交付未按选择执行的回复。日志中的 `configuration confirmed` 记录请求与确认等级及入口阶段。`zero-thought usage sample` 仅记录账单中的零思考 token，不将其解释为自动降档、热池标记或恢复正常的证据；思考 token 数量也不作为自动重试条件。
 
 已在 PI Desktop 0.22.0、agy 1.5.5 上验证带历史对话的完整进程重启：续问仍沿用原 ACP session ID，并正确回忆此前保存的验证信息。日志中的 `antigravity-acp: restored session <id>` 仅在恢复后的复用计划成立时记录；最终索引也应保留相同 ID。
 

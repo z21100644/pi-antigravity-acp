@@ -364,9 +364,9 @@ test('a live session folds availableModels into per-family efforts', async () =>
   assert.deepEqual(runtime.catalog.list().map(m => m.id), ['gemini-4-argon', 'gemini-3.8-flash', 'claude-opus-5-5'])
 })
 
-test('a hidden fixed-effort family still runs at medium without a thought_level write', async () => {
+test('a hidden fixed-effort family honors a matching medium request without a thought_level write', async () => {
   const { runtime, prompts } = makeRuntime()
-  const chunks = await collect(runtime.stream({ provider: 'antigravity', model: 'gpt-oss-120b-medium', reasoningEffort: 'high', sessionId: 'S15', messages: [sys, user('u1', 'hello')] }))
+  const chunks = await collect(runtime.stream({ provider: 'antigravity', model: 'gpt-oss-120b-medium', reasoningEffort: 'medium', sessionId: 'S15', messages: [sys, user('u1', 'hello')] }))
   assert.equal(finishOf(chunks).reason.kind, 'stop')
   assert.match(textOf(chunks), /^echo:gpt-oss-120b-medium:medium:/)
   assert.equal(prompts()[0].level, 'medium')

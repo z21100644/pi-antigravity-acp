@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { setTimeout as retryDelay } from 'node:timers/promises';
 import { LlmError } from "./protocol.js";
 import { AcpProcess } from "./acp-process.js";
-import { ModelCatalog, nearestEffort } from "./catalog.js";
+import { ModelCatalog } from "./catalog.js";
 import { asEffort } from "./config.js";
 import { AcpTurn, AWAIT_TOOL, AWAIT_TOOL_NAME, CALL_TOOL, CALL_TOOL_NAME, pumpStep, relayNotice } from "./conversation.js";
 import { AGENT_TOOL_PREFIX, bridgeSystemPrompt, inputPrompt, LOCKED_REPLAY_BUDGET_BYTES, MCP_SERVER_NAME, renderTranscript, isRuntimeContextSnapshot, replayPrompt, splitSystem, UNLOCKED_REPLAY_BUDGET_BYTES, } from "./history.js";
@@ -216,17 +216,19 @@ export class AntigravityRuntime {
         return this.preflight?.unlock.status === 'unlocked' ? UNLOCKED_CONTEXT_WINDOW : LOCKED_CONTEXT_WINDOW;
     }
     /**
-     * Effort one family will actually run at: the nearest offered effort, or the
-     * one baked into a fixed-variant id such as `gpt-oss-120b-medium`.
+     * Validate the requested effort without substituting another level. The
+     * live session selector is checked again before generation can resume.
      * @param model - family id.
      * @param requested - effort the caller asked for.
      * @returns the effort to apply.
      */
     effectiveEffort(model, requested) {
-        const offered = this.catalog.effortsFor(model);
-        if (offered.length > 0)
-            return nearestEffort(requested, offered);
-        return this.catalog.fixedEffort(model) ?? requested;
+        if (asEffort(requested) === undefined)
+            throw new LlmError(`Unsupported reasoning effort ${String(requested)}; choose low, medium, or high`, 'EFFORT_UNAVAILABLE');
+        const fixed = this.catalog.fixedEffort(model);
+        if (fixed !== undefined && fixed !== requested)
+            throw new LlmError(`Model ${model} has fixed effort ${fixed}; requested effort ${requested} cannot be applied`, 'EFFORT_UNAVAILABLE');
+        return requested;
     }
     /** Default effort. */
     defaultEffort() {
@@ -506,7 +508,7 @@ export class AntigravityRuntime {
             // OMP retains tool schemas on compaction calls for provider prefix reuse.
             // The summarizer cannot execute tool calls: do not expose MCP or tool deltas.
             const tools = purpose === COMPACTION_PURPOSE || purpose === TEXT_ONLY_PURPOSE ? [] : toBridgeTools(options.tools);
-            const effort = this.effectiveEffort(options.model, asEffort(options.reasoningEffort) ?? this.defaultEffort());
+            const effort = this.effectiveEffort(options.model, options.reasoningEffort ?? this.defaultEffort());
             conv = await this.acquireConversation(key, purpose, {
                 system: split.system,
                 tools,
@@ -540,7 +542,7 @@ export class AntigravityRuntime {
                 }
                 else {
                     timing?.mark('session_ready', { sessionId: conv.sessionId, reused: true });
-                    const resumed = await this.deliverResults(conv, split.messages, proc, tools, options.signal);
+                    const resumed = await this.deliverResults(conv, split.messages, proc, tools, options.signal, options.model, effort);
                     if (resumed) {
                         conv.knownHistory = history;
                         yield* this.pump(conv, proc, options, effort);
@@ -574,7 +576,7 @@ export class AntigravityRuntime {
                     }
                     options.signal?.throwIfAborted();
                     timing?.mark('session_ready', { sessionId: conversation.sessionId, reused });
-                    const switched = await this.select(conversation, proc, options.model, effort);
+                    const switched = await this.select(conversation, proc, options.model, effort, { confirm: true, phase: 'prompt' });
                     const settleMs = this.host.config.coldSwitchSettleMs ?? 80;
                     if ((!reused || resumedFromDisk) && switched && settleMs > 0)
                         await retryDelay(settleMs, undefined, { signal: options.signal });
@@ -691,6 +693,8 @@ export class AntigravityRuntime {
             sessionId: undefined,
             process: undefined,
             configOptions: [],
+            selecting: false,
+            configurationError: undefined,
             systemHash: undefined,
             advertisedTools: [],
             nativeToolBaselines: [],
@@ -1076,6 +1080,18 @@ export class AntigravityRuntime {
             conv.configOptions = update.configOptions;
             if (this.catalog.observe(update.configOptions))
                 this.host.onModelsChanged?.();
+            // A parked call can be corrected before its result is released. A
+            // change during generation invalidates the active response instead.
+            if (!conv.selecting && conv.turn !== undefined && conv.turn.pendingCalls.size === 0
+                && conv.model !== undefined && conv.effort !== undefined) {
+                const error = this.selectionError(conv, conv.model, conv.effort);
+                if (error !== undefined && conv.configurationError === undefined) {
+                    conv.configurationError = error;
+                    this.host.log.warn(`antigravity-acp: ${error.message}`);
+                    conv.process?.cancel(conv.sessionId);
+                    conv.turn.events.push({ kind: 'error', error });
+                }
+            }
         }
         if (recordReportedToolCall(conv, update) === 'conflict') {
             this.host.log.warn(`antigravity-acp: agent reported conflicting identity for tool call ${String(update.toolCallId)}`);
@@ -1512,6 +1528,8 @@ export class AntigravityRuntime {
             return reject('no MCP bridge is mounted for this session');
         if (conv.turn === undefined || conv.turn.finished)
             return reject('no live turn');
+        if (conv.configurationError !== undefined)
+            return reject('unconfirmed model configuration');
         const toolCallId = request.toolCall?.toolCallId;
         if (typeof toolCallId !== 'string' || toolCallId.length === 0)
             return reject('missing toolCallId');
@@ -1550,41 +1568,69 @@ export class AntigravityRuntime {
         }
         return pick('allow_once') ?? { outcome: 'cancelled' };
     }
-    async select(conv, proc, model, effort) {
-        const sessionId = conv.sessionId;
+    selectionError(conv, model, effort) {
+        if (typeof model !== 'string' || !model || asEffort(effort) === undefined)
+            return new LlmError('Antigravity configuration cannot be confirmed without a model and reasoning effort', 'CONFIG_MISMATCH');
         const modelOption = conv.configOptions.find(o => o.id === 'model' || o.category === 'model');
-        if (modelOption?.options !== undefined && !modelOption.options.some(o => o.value === model)) {
-            throw new LlmError(`Antigravity does not offer model "${model}" to this account; available: ${modelOption.options.map(o => o.value).join(', ')}`, 'UNKNOWN_MODEL');
-        }
-        let switched = false;
-        const write = async (id, category, value) => {
-            for (let attempt = 0; attempt < 2; attempt++) {
-                conv.configOptions = await proc.setConfigOption(sessionId, id, value).catch(error => { throw mapError(error); });
-                const option = conv.configOptions.find(o => o.id === id || o.category === category);
-                if (option?.currentValue === undefined || option.currentValue === value)
-                    return;
+        if (modelOption?.currentValue !== model)
+            return new LlmError(`Antigravity configuration mismatch: requested model ${model}, reported ${modelOption?.currentValue ?? '(missing)'}`, 'CONFIG_MISMATCH');
+        if (this.catalog.fixedEffort(model) === effort)
+            return undefined;
+        const option = conv.configOptions.find(o => o.id === 'thought_level' || o.category === 'thought_level');
+        if (option?.currentValue !== effort)
+            return new LlmError(`Antigravity configuration mismatch for ${model}: requested thought_level=${effort}, reported ${option?.currentValue ?? '(missing)'}`, 'CONFIG_MISMATCH');
+        return undefined;
+    }
+    assertSelection(conv, model, effort) {
+        const error = conv.configurationError ?? this.selectionError(conv, model, effort);
+        if (error !== undefined) throw error;
+    }
+    async select(conv, proc, model, effort, { confirm = false, phase } = {}) {
+        this.effectiveEffort(model, effort);
+        conv.selecting = true;
+        try {
+            const sessionId = conv.sessionId;
+            const modelOption = conv.configOptions.find(o => o.id === 'model' || o.category === 'model');
+            if (modelOption?.options !== undefined && !modelOption.options.some(o => o.value === model)) {
+                throw new LlmError(`Antigravity does not offer model "${model}" to this account; available: ${modelOption.options.map(o => o.value).join(', ')}`, 'UNKNOWN_MODEL');
             }
-            throw new LlmError(`Antigravity did not apply ${id}=${value}`, 'TRANSPORT');
-        };
-        const needModel = modelOption?.currentValue !== undefined ? modelOption.currentValue !== model : conv.model !== model;
-        if (needModel) {
-            await write(modelOption?.id ?? 'model', 'model', model);
-            switched = true;
+            let switched = false;
+            const write = async (id, category, value) => {
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    conv.configOptions = await proc.setConfigOption(sessionId, id, value).catch(error => { throw mapError(error); });
+                    const option = conv.configOptions.find(o => o.id === id || o.category === category);
+                    if (option?.currentValue === value)
+                        return;
+                }
+                throw new LlmError(`Antigravity did not apply ${id}=${value}`, 'TRANSPORT');
+            };
+            const needModel = modelOption?.currentValue !== undefined ? modelOption.currentValue !== model : conv.model !== model;
+            if (needModel) {
+                await write(modelOption?.id ?? 'model', 'model', model);
+                switched = true;
+            }
+            // A model change replaces all options and can reset the reasoning level.
+            const updatedLevelOption = conv.configOptions.find(o => o.id === 'thought_level' || o.category === 'thought_level');
+            if (this.catalog.fixedEffort(model) === undefined) {
+                if (updatedLevelOption === undefined || (Array.isArray(updatedLevelOption.options)
+                    && !updatedLevelOption.options.some(option => option.value === effort)))
+                    throw new LlmError(`Antigravity does not offer thought_level=${effort} for ${model}`, 'EFFORT_UNAVAILABLE');
+                const changed = updatedLevelOption.currentValue !== effort;
+                if (confirm || changed) await write(updatedLevelOption.id, 'thought_level', effort);
+                switched ||= changed;
+            }
+            this.assertSelection(conv, model, effort);
+            conv.model = model;
+            conv.effort = effort;
+            if (conv.standbySlot !== undefined) {
+                conv.standbySlot.model = model;
+                conv.standbySlot.effort = effort;
+            }
+            if (confirm)
+                this.host.log.info(`antigravity-acp: configuration confirmed ${JSON.stringify({ sessionId, model, requestedEffort: effort, confirmedEffort: effort, phase })}`);
+            return switched;
         }
-        conv.model = model;
-        // A model change replaces all options and can reset the reasoning level.
-        const selectable = this.catalog.effortsFor(model);
-        const updatedLevelOption = conv.configOptions.find(o => o.id === 'thought_level' || o.category === 'thought_level');
-        if (selectable.length > 0 && updatedLevelOption !== undefined && updatedLevelOption.currentValue !== effort) {
-            await write(updatedLevelOption.id, 'thought_level', effort);
-            switched = true;
-        }
-        conv.effort = effort;
-        if (conv.standbySlot !== undefined) {
-            conv.standbySlot.model = model;
-            conv.standbySlot.effort = effort;
-        }
-        return switched;
+        finally { conv.selecting = false; }
     }
     plan(conv, system, messages, history) {
         const reusable = conv.sessionId !== undefined
@@ -1669,6 +1715,7 @@ export class AntigravityRuntime {
         conv.issuedIds.clear();
         conv.model = undefined;
         conv.effort = undefined;
+        conv.configurationError = undefined;
         conv.dirty = false;
         if (sessionId !== undefined && proc !== undefined) {
             if (this.unusedSessions.get(sessionId) === proc)
@@ -1688,6 +1735,8 @@ export class AntigravityRuntime {
         return false;
     }
     startPrompt(conv, proc, blocks) {
+        try { this.assertSelection(conv, conv.model, conv.effort); }
+        catch (error) { this.dropTurn(conv, 'The model configuration could not be confirmed.'); throw error; }
         const turn = conv.turn;
         if (!this.sessions.forget(conv.key)) {
             conv.turn = undefined;
@@ -1714,7 +1763,10 @@ export class AntigravityRuntime {
             for await (const chunk of pumpStep(turn, {
                 parkSettleMs: this.host.config.parkSettleMs,
                 maxContinuations: this.longDecodeContinuations(),
-                continuePrompt: () => {
+                continuePrompt: async () => {
+                    await this.select(conv, proc, options.model, effort, { confirm: true, phase: 'continuation' });
+                    options.signal?.throwIfAborted();
+                    this.assertSelection(conv, options.model, effort);
                     conv.timing?.mark('prompt_sent', { sessionId });
                     return turn.trackPrompt(proc.prompt(sessionId, [{ type: 'text', text: CONTINUE_PROMPT }]));
                 },
@@ -1730,10 +1782,14 @@ export class AntigravityRuntime {
                     }
                     if (batch === undefined)
                         return undefined;
+                    if (batch.usage.thoughtTokens === 0 && batch.usage.outputTokens > 0)
+                        this.host.log.info(`antigravity-acp: zero-thought usage sample ${JSON.stringify({ sessionId, requestedEffort: effort,
+                            confirmedEffort: conv.effort, cachedReadTokens: batch.usage.cachedReadTokens ?? 0, outputTokens: batch.usage.outputTokens, exact: batch.exact === true })}`);
                     turn.recordStepBatch(batch);
                     return batch;
                 },
             }, options.signal)) {
+                if (conv.configurationError !== undefined) throw conv.configurationError;
                 if (chunk.type === 'block-end') {
                     output.push(structuredClone(chunk.block));
                     if (chunk.block.type === 'tool-call')
@@ -1777,7 +1833,7 @@ export class AntigravityRuntime {
             }
         }
     }
-    async deliverResults(conv, messages, proc, tools, signal) {
+    async deliverResults(conv, messages, proc, tools, signal, model, effort) {
         const turn = conv.turn;
         const results = new Map();
         let last = -1;
@@ -1808,6 +1864,9 @@ export class AntigravityRuntime {
             this.dropTurn(conv, 'The native prompt failed before these tool results arrived.');
             throw mapError(failure);
         }
+        await this.select(conv, proc, model, effort, { confirm: true, phase: 'tool-resume' });
+        signal?.throwIfAborted();
+        this.assertSelection(conv, model, effort);
         // The native prompt can settle while image preparation is in flight.
         const live = !turn.finished && this.isTurnLive(turn);
         const toolDelta = consumeToolDelta(conv, tools);
@@ -1915,6 +1974,8 @@ export class AntigravityRuntime {
         if (conv === undefined) {
             return { content: [{ type: 'text', text: 'No harness turn is waiting for this tool call.' }], isError: true };
         }
+        if (conv.configurationError !== undefined)
+            return { content: [{ type: 'text', text: conv.configurationError.message }], isError: true };
         if (request.conversationId !== undefined && (conv.sessionId === undefined || request.conversationId !== conv.sessionId)) {
             return { content: [{ type: 'text', text: 'Tenant session mismatch.' }], isError: true };
         }
