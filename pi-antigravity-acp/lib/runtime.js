@@ -135,7 +135,8 @@ export class AntigravityRuntime {
                 conv?.timing?.mark('tool_result_sent', { sessionId: conv.sessionId, tool: name });
             },
         });
-        this.quota = new QuotaReader(() => this.preflight?.binary, host.runCommand, host.config.quotaTtlMs);
+        this.quota = new QuotaReader(() => this.preflight?.binary ?? resolveAgyBinary(host.config.command), (...args) => host.runCommand(...args), host.config.quotaTtlMs,
+            { cachePath: join(this.home, 'quota-cache.json'), warn: message => host.log.warn(message) });
         this.sweeper = setInterval(() => this.sweep(), 60_000);
         this.sweeper.unref?.();
     }
@@ -415,6 +416,7 @@ export class AntigravityRuntime {
     /** Stop every session, the process, and the bridge. */
     async dispose() {
         this.disposed = true;
+        this.quota.dispose();
         this.closeRetryAbort.abort(new Error('Antigravity provider was disposed'));
         this.skillDescriptionRetryAbort.abort(new Error('Antigravity provider was disposed'));
         this.skillDescriptionRetries.clear();

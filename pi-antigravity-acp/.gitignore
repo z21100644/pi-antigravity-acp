@@ -9,3 +9,5 @@ coverage/
 session-index.json
 session-index.json.*.tmp
 bridge-token
+quota-cache.json
+quota-cache.json.*.tmp

@@ -13,5 +13,5 @@
     "url": "https://github.com/z21100644/pi-antigravity-acp.git"
   },
   "engines": { "node": ">=22.19" },
-  "files": ["agent.js", "http-bridge.js", "main.cjs", "manifest.json", "lib", "scripts", "README.md", "LICENSE"]
+  "files": ["agent.js", "http-bridge.js", "main.cjs", "manifest.json", "lib", "renderer", "scripts", "README.md", "LICENSE"]
 }

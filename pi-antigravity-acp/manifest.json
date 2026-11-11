@@ -7,8 +7,12 @@
   "main": "main.cjs",
   "permissions": [
     "agent.extension",
-    "provider.register"
+    "provider.register",
+    "renderer.extension"
   ],
+  "renderer": "renderer/index.mjs",
+  "rendererActions": ["plugin.call"],
+  "rendererCallMethods": ["monitor.snapshot", "monitor.refresh"],
   "contributes": {
     "agentExtensions": [
       "agent.js"

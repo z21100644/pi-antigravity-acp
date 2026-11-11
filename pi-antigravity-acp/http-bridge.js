@@ -7,6 +7,7 @@ import { AntigravityRuntime } from './lib/runtime.js'
 import { loadConfig } from './lib/settings.js'
 import { spawnAcp, runCommand } from './lib/host.js'
 import { toMessages } from './lib/messages.js'
+import { UsageMonitor } from './lib/usage-monitor.js'
 
 export const HTTP_PORT = 32187
 export const HTTP_BASE_URL = `http://127.0.0.1:${HTTP_PORT}/v1`
@@ -105,12 +106,14 @@ export async function startHttpBridge({ userDir = join(homedir(), '.pi-desktop')
     canReadImages: () => true,
     log: { info: message => log('debug', message), warn: message => log('warn', message) },
   })
+  const monitor = new UsageMonitor(runtime.quota, { warn: message => log('warn', message) })
   const controllers = new Set()
   const server = createServer(async (req, res) => {
     const controller = new AbortController()
     controllers.add(controller)
     res.once('close', () => { if (!res.writableEnded) controller.abort(new Error('PI Desktop disconnected')) })
     let heartbeat
+    let monitoredId
     function json(status, value) {
       res.writeHead(status, { 'content-type': 'application/json' })
       res.end(JSON.stringify(value))
@@ -138,12 +141,15 @@ export async function startHttpBridge({ userDir = join(homedir(), '.pi-desktop')
       const body = await readBody(req), request = toAcpRequest(body, req.headers, controller.signal, runtime.defaultEffort())
       log('info', `Local HTTP → ACP: ${request.model}; session ${request.sessionId ?? 'anonymous'}; ${request.tools.length} tools; effort ${request.reasoningEffort}`)
       const id = `chatcmpl-${randomUUID()}`, created = Math.floor(Date.now() / 1000)
+      monitoredId = id
+      monitor.begin(id, request)
       const envelope = (delta, finish = null) => ({ id, object: 'chat.completion.chunk', created,
         model: request.model, choices: [{ index: 0, delta, finish_reason: finish }] })
       let text = '', reasoning = '', usage, finish
       const calls = new Map()
       for await (const chunk of runtime.stream(request)) {
         if (controller.signal.aborted) break
+        monitor.chunk(id, chunk)
         if (chunk.type === 'text-delta') {
           text += chunk.text
           if (body.stream) sse(envelope({ content: chunk.text }))
@@ -158,7 +164,21 @@ export async function startHttpBridge({ userDir = join(homedir(), '.pi-desktop')
           if (body.stream) sse(envelope({ tool_calls: [{ index: call.index,
             ...(first ? { id: call.id, type: 'function' } : {}),
             function: { ...(first ? { name: call.function.name } : {}), arguments: chunk.argumentsDelta } }] }))
-        } else if (chunk.type === 'usage') usage = wireUsage(chunk.usage)
+        } else if (chunk.type === 'usage') {
+          const next = wireUsage(chunk.usage)
+          if (!usage) usage = next
+          else {
+            usage.prompt_tokens += next.prompt_tokens
+            usage.completion_tokens += next.completion_tokens
+            usage.total_tokens += next.total_tokens
+            usage.prompt_tokens_details.cached_tokens += next.prompt_tokens_details.cached_tokens
+            usage.prompt_tokens_details.cache_write_tokens += next.prompt_tokens_details.cache_write_tokens
+            if (next.completion_tokens_details) {
+              usage.completion_tokens_details ??= { reasoning_tokens: 0 }
+              usage.completion_tokens_details.reasoning_tokens += next.completion_tokens_details.reasoning_tokens
+            }
+          }
+        }
         else if (chunk.type === 'finish') finish = chunk.reason
       }
       if (controller.signal.aborted) return
@@ -186,17 +206,20 @@ export async function startHttpBridge({ userDir = join(homedir(), '.pi-desktop')
         else json(error.code === 'RATE_LIMIT' ? 429 : error.code === 'AUTH' ? 401 : 502, { error: detail })
       }
     } finally {
+      monitor.end(monitoredId, controller.signal.aborted ? 'aborted' : undefined)
       clearInterval(heartbeat)
       controllers.delete(controller)
     }
   })
   try {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, '127.0.0.1', resolve) })
-  } catch (error) { await runtime.dispose(); throw error }
+  } catch (error) { monitor.dispose(); await runtime.dispose(); throw error }
   log('info', `Local ACP bridge listening on 127.0.0.1:${server.address().port}`)
   return {
     port: server.address().port,
+    monitorSnapshot: (sessionId, force = false) => monitor.snapshot(sessionId, force),
     async close() {
+      monitor.dispose()
       for (const controller of controllers) controller.abort(new Error('ACP plugin unloaded'))
       const closed = new Promise(resolve => server.close(resolve))
       server.closeAllConnections()

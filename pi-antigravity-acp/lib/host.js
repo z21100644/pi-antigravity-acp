@@ -32,17 +32,22 @@ export const spawnAcp = (argv, cwd) => {
         stderrTail: () => stderr,
     };
 };
-export const runCommand = (argv, timeoutMs) => {
+export const runCommand = (argv, timeoutMs, { signal } = {}) => {
+    signal?.throwIfAborted();
     const { promise, resolve, reject } = Promise.withResolvers();
     const child = spawn(argv[0], argv.slice(1), {
-        cwd: homedir(), env: childEnvironment(), stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: homedir(), env: childEnvironment(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
     });
     let stdout = '';
     let stderr = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`Command timed out after ${timeoutMs}ms: ${argv[0]}`)); }, timeoutMs);
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); };
+    const abort = () => { child.kill('SIGKILL'); cleanup(); reject(signal.reason); };
+    const timer = setTimeout(() => { child.kill('SIGKILL'); cleanup(); reject(new Error(`Command timed out after ${timeoutMs}ms: ${argv[0]}`)); }, timeoutMs);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     child.stdout.on('data', (data) => { stdout = (stdout + data.toString()).slice(-8 * 1024 * 1024); });
     child.stderr.on('data', (data) => { stderr = (stderr + data.toString()).slice(-256 * 1024); });
-    child.once('error', error => { clearTimeout(timer); reject(error); });
-    child.once('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr }); });
+    child.once('error', error => { cleanup(); reject(error); });
+    child.once('close', code => { cleanup(); resolve({ code, stdout, stderr }); });
     return promise;
 };

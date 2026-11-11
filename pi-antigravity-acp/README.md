@@ -50,6 +50,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pi-antigravity-acp\scripts
 
 已在 PI Desktop 0.22.0、agy 1.5.5 上验证带历史对话的完整进程重启：续问仍沿用原 ACP session ID，并正确回忆此前保存的验证信息。日志中的 `antigravity-acp: restored session <id>` 仅在恢复后的复用计划成立时记录；最终索引也应保留相同 ID。
 
+## 实时额度面板
+
+输入框工具栏显示 **Gemini / Claude/GPT 5h · 每周** 剩余比例，点击打开 **Usage Monitor**。面板列出两个模型组的五小时与每周额度、重置时间、官方快照时间，以及当前对话的本轮 token。按钮优先显示此对话最近一次 AGY 请求的模型组；尚无请求时显示 Gemini，展开后始终能看到全部组。
+
+- 订阅比例来自官方 `agy -p /usage --output-format json`，不从 token 换算。默认缓存 120 秒（`quotaTtlMs`）；模型请求完成后和手动更新可提前刷新，所有查询共用 15 秒节流及单个执行中的命令。查询不生成模型回复，也不需要先启动 ACP。
+- 生成中按已收到的文字与思考片段显示“输出估算”，工具交接时显示“等待工具”；收到数据库用量后显示“SQLite 已结算”。数据库不可用时标记“ACP 报告”，不宣称精确结算。估算不写入已报告累计，也不扣减订阅比例。
+- 面板展开时每秒读取本机监控快照，折叠时每五秒读取，窗口隐藏后暂停。保持标准 OpenAI SSE 格式；PI 的 renderer 扩展通过 `plugin.call` 读取本机快照。
+- 官方额度保存在 ACP 数据目录的 `quota-cache.json`，重启可立即显示。查询失败保留旧比例和原更新时间，标记旧快照并展示错误；本轮与累计 token 仅覆盖当前插件进程已观察到的主对话请求，不追溯历史，重启后重新累计。标题等辅助请求只反映在官方订阅额度中。
+
+现有安装请关闭 PI Desktop 后重新运行安装器。面板新增 `renderer.extension` 权限，需要明确重新载入插件；仅热更新文件不会授予新权限。该权限用于 PI 原生输入列控制项和浮层，不读取历史对话内容。
+
 ## 开发验证
 
 在本目录运行：
@@ -58,10 +69,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\pi-antigravity-acp\scripts
 npm test
 ```
 
-测试使用本机 fake ACP，覆盖 HTTP 历史转换、重启恢复、用量对账、工具交接、取消与 standby 清理。实际对话、截图、日志、数据库和安装备份应保存在仓库之外。
+测试使用本机 fake ACP，覆盖 HTTP 历史转换、重启恢复、用量对账、工具交接、取消、standby 清理，以及额度缓存、节流、过期快照和流中监控。实际对话、截图、日志、数据库和安装备份应保存在仓库之外。
 
 ## 来源
 
 ACP 核心沿用 OMP 1.3.0 实现，基于 [lili-luo/dsh-plugin-bundle](https://github.com/lili-luo/dsh-plugin-bundle) 与 [121909 的适配](https://github.com/121909/dsh-plugin-bundle)。保留原项目 [MIT 许可证](LICENSE)。
 
 生成记录解析、持久化会话流程和冷切换等待参考 [dsh-plugin-bundle v0.4.0（`0a90ec3`）](https://github.com/lili-luo/dsh-plugin-bundle/tree/0a90ec37c69430608084e33ebc2f891e328c9e89/dsh-llm-antigravity-acp)，并适配 PI Desktop 的历史指纹、HTTP provider 身份和原有容量管理。
+
+额度面板使用 PI Desktop 官方 [renderer SDK](https://github.com/vastsa/PI-Desktop/blob/main/packages/plugin-sdk/src/renderer.ts) 的 `composerControl`、`openLayer` 和 `plugin.call`，按[插件开发说明](https://github.com/vastsa/PI-Desktop/blob/main/docs/plugin-development.md)重新载入新增权限。

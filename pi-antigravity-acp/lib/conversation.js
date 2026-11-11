@@ -366,7 +366,7 @@ export async function* pumpStep(turn, host, signal) {
                 if (stepSample !== undefined) {
                     const usage = toTokenUsage(stepSample.usage, stepSample.exact ? 1 : stepSample.calls);
                     if (usage !== undefined)
-                        yield { type: 'usage', usage };
+                        yield { type: 'usage', usage, exact: stepSample.exact === true };
                 }
                 if (isAborted()) {
                     yield* abort();
@@ -415,7 +415,7 @@ export async function* pumpStep(turn, host, signal) {
                     usage = toTokenUsage(totalUsage, calls);
                 }
                 if (usage !== undefined)
-                    yield { type: 'usage', usage };
+                    yield { type: 'usage', usage, exact: finalSample?.exact === true };
                 if (stop === 'end_turn' && !turn.produced) {
                     throw new LlmError('Antigravity ended the turn without visible output', 'EMPTY_RESPONSE');
                 }
