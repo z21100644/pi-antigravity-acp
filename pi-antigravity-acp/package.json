@@ -1,0 +1,14 @@
+{
+  "name": "pi-antigravity-acp",
+  "version": "0.2.0",
+  "type": "module",
+  "main": "main.cjs",
+  "license": "MIT",
+  "description": "PI Desktop model provider using a local authenticated HTTP bridge to the official agy ACP transport.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/z21100644/pi-antigravity-acp.git"
+  },
+  "engines": { "node": ">=22.19" },
+  "files": ["agent.js", "http-bridge.js", "main.cjs", "manifest.json", "lib", "scripts", "README.md", "LICENSE"]
+}

@@ -1,0 +1,2 @@
+# Preserve patch bytes; unified-diff context prefixes can precede tabs or blank lines.
+patches/*.patch -text whitespace=-blank-at-eol,-space-before-tab

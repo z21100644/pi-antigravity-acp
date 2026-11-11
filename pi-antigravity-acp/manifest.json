@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "id": "imported.omp-antigravity-acp",
+  "name": "Antigravity ACP for PI Desktop",
+  "version": "0.2.0",
+  "description": "Antigravity models through local agy ACP; PI Desktop owns tools and permissions.",
+  "main": "main.cjs",
+  "permissions": [
+    "agent.extension",
+    "provider.register"
+  ],
+  "contributes": {
+    "agentExtensions": [
+      "agent.js"
+    ],
+    "providers": [
+      {
+        "id": "antigravity",
+        "name": "Antigravity ACP",
+        "vendorKey": "pi-desktop-antigravity-acp",
+        "authKind": "api_key",
+        "baseUrl": "http://127.0.0.1:32187/v1",
+        "apiStyle": "chat_completions",
+        "description": "Local authenticated HTTP bridge to the official agy ACP transport.",
+        "models": [
+          { "id": "gemini-4-carbon", "name": "Gemini 4 Carbon", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" },
+          { "id": "gemini-4-argon", "name": "Gemini 4 Argon", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" },
+          { "id": "gemini-3.8-flash", "name": "Gemini 3.8 Flash", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" },
+          { "id": "claude-opus-5-5", "name": "Claude Opus 5.5", "contextWindow": 256000, "maxTokens": 64000, "supportsImages": true, "thinkingLevels": ["off", "low", "medium", "high"], "defaultThinkingLevel": "medium" }
+        ]
+      }
+    ]
+  },
+  "engines": {
+    "piDesktop": ">=0.22.0"
+  }
+}
