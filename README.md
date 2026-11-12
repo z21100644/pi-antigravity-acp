@@ -1,3 +1,5 @@
+被風控了,已老實
+
 # pi-antigravity-acp
 
 通过官方 `agy acp` 把 Antigravity 模型接入 **PI Desktop**。工具执行、权限和会话界面由 PI Desktop 管理。
